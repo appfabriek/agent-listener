@@ -1,0 +1,30 @@
+{
+  "name": "agenttalktome-listener",
+  "version": "1.0.0",
+  "description": "Agent Talk To Me Listener - Connect any AI agent to mobile voice interaction",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "agenttalktome-listener": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "openvoice",
+    "openclaw",
+    "agent",
+    "poller",
+    "voice-assistant"
+  ],
+  "author": "Geert Wirken",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
