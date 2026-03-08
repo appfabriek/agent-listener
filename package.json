@@ -1,11 +1,11 @@
 {
-  "name": "agenttalktome-listener",
+  "name": "agent-listener",
   "version": "2.0.0",
-  "description": "ATTM Listener - Connects an AI agent to mobile devices via the BvGeert pairing API",
+  "description": "Agent Listener - Connects an AI agent to mobile devices via the BvGeert pairing API",
   "type": "module",
   "main": "index.js",
   "bin": {
-    "attm-listener": "./index.js"
+    "agent-listener": "./index.js"
   },
   "scripts": {
     "start": "node index.js",
@@ -13,7 +13,7 @@
     "test": "node --test 'test/*.test.js'"
   },
   "keywords": [
-    "attm",
+    "agent-listener",
     "agent",
     "listener",
     "voice-assistant",

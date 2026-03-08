@@ -1,4 +1,4 @@
-# ATTM Listener
+# Agent Listener
 
 Node.js service that registers as an `agent` listener on the BvGeert pairing API and bridges messages to an AI agent (OpenClaw).
 
@@ -31,7 +31,7 @@ curl -X POST https://your-domain.com/api/v1/listeners/LST_ID/pair \
   -H "Authorization: Bearer REG_TOKEN"
 ```
 
-Enter the 6-digit code in the ATTM iOS app to pair.
+Enter the 6-digit code in the Agent iOS app to pair.
 
 ## Production
 
@@ -50,7 +50,7 @@ pm2 start ecosystem.config.cjs
 | `API_URL` | Yes | — | BvGeert API base URL |
 | `REGISTRATION_TOKEN` | No | — | Saved token from registration |
 | `LISTENER_TYPE` | No | `agent` | Listener type |
-| `LISTENER_NAME` | No | `ATTM Listener` | Display name |
+| `LISTENER_NAME` | No | `Agent Listener` | Display name |
 | `FORWARD_MODE` | No | `webhook` | `webhook` or `openclaw-cli` |
 | `WEBHOOK_URL` | No | — | Webhook endpoint for forwarding |
 | `WEBHOOK_TOKEN` | No | — | Bearer token for webhook |

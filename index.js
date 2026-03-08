@@ -8,7 +8,7 @@ const config = {
   apiUrl: process.env.API_URL,
   registrationToken: process.env.REGISTRATION_TOKEN,
   listenerType: process.env.LISTENER_TYPE || "agent",
-  listenerName: process.env.LISTENER_NAME || "ATTM Listener",
+  listenerName: process.env.LISTENER_NAME || "Agent Listener",
   forwardMode: process.env.FORWARD_MODE || "webhook",
   webhookUrl: process.env.WEBHOOK_URL,
   webhookToken: process.env.WEBHOOK_TOKEN,
@@ -23,7 +23,7 @@ if (!config.apiUrl) {
 const log = (...args) => config.debug && console.log("🐛", ...args);
 
 async function main() {
-  console.log("🤖 ATTM Listener starting...");
+  console.log("🤖 Agent Listener starting...");
   console.log(`📡 API: ${config.apiUrl}`);
   console.log(`🔧 Forward: ${config.forwardMode}`);
 

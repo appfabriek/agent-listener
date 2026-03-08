@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "attm-listener",
+      name: "agent-listener",
       script: "index.js",
       env: {
         NODE_ENV: "production",
