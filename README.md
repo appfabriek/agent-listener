@@ -1,6 +1,6 @@
 # Agent Listener
 
-Node.js service that registers as an `agent` listener on the BvGeert pairing API and bridges messages to an AI agent (OpenClaw).
+Node.js service that registers as an `agent` listener on the AgentTalkToMe pairing API and bridges messages to an AI agent (OpenClaw).
 
 ## How it works
 
@@ -47,7 +47,7 @@ pm2 start ecosystem.config.cjs
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `API_URL` | Yes | — | BvGeert API base URL |
+| `API_URL` | Yes | — | AgentTalkToMe API base URL |
 | `REGISTRATION_TOKEN` | No | — | Saved token from registration |
 | `LISTENER_TYPE` | No | `agent` | Listener type |
 | `LISTENER_NAME` | No | `Agent Listener` | Display name |
