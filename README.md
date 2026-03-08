@@ -1,64 +1,57 @@
-# Agent Talk To Me — Listener
+# ATTM Listener
 
-Connect any AI agent to mobile voice interaction.
+Node.js service that registers as an `agent` listener on the BvGeert pairing API and bridges messages to an AI agent (OpenClaw).
 
-## What is this?
+## How it works
 
-The **Listener** is a lightweight service that connects your AI agent to the [Agent Talk To Me](https://agenttalktome.com) mobile app. It polls the API for incoming voice messages and forwards them to your agent.
+1. Registers as a listener via the pairing API
+2. Connects to ActionCable WebSocket for each paired device
+3. Forwards incoming messages to the AI agent (via webhook or CLI)
+4. Sends the response back through the WebSocket
 
-## Quick Install
-
-```bash
-curl -sL https://agenttalktome.com/install.sh | PAIRING_CODE=<your-code> AGENT_TOKEN=<your-token> sh
-```
-
-Get your pairing code and token by visiting [agenttalktome.com](https://agenttalktome.com).
-
-## Manual Install
+## Setup
 
 ```bash
-git clone https://github.com/appfabriek/agenttalktomelistener.git
-cd agenttalktomelistener
 npm install
 cp .env.example .env
-# Edit .env with your AGENT_TOKEN
+# Edit .env with your settings
 npm start
 ```
 
-## Run with PM2 (recommended)
+## First run
+
+On first run (no `REGISTRATION_TOKEN`), the listener registers itself and prints the token. Save it in `.env` to reconnect on restart.
+
+## Pairing a device
+
+After the listener is running, create a pairing code via the API:
 
 ```bash
-npm install -g pm2
+curl -X POST https://your-domain.com/api/v1/listeners/LST_ID/pair \
+  -H "Authorization: Bearer REG_TOKEN"
+```
+
+Enter the 6-digit code in the ATTM iOS app to pair.
+
+## Production
+
+```bash
+# PM2
 pm2 start ecosystem.config.cjs
-pm2 save
+
+# systemd
+# See docs for systemd service file
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set:
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `AGENT_TOKEN` | Yes | Your agent token from pairing |
-| `API_URL` | No | API URL (default: `https://api.agenttalktome.com`) |
-| `POLL_TIMEOUT` | No | Long-poll timeout in seconds (default: 30) |
-| `USE_OPENCLAW_CLI` | No | Use OpenClaw CLI for message processing (default: true) |
-| `DEBUG` | No | Enable debug logging (default: false) |
-
-## How it works
-
-1. Visit [agenttalktome.com](https://agenttalktome.com) — get a pairing code
-2. Enter the code in the mobile app
-3. The Listener polls the API for voice messages
-4. Messages are forwarded to your AI agent (via OpenClaw CLI or webhook)
-5. Responses are sent back to the app
-
-## Requirements
-
-- Node.js 18+
-- npm
-- PM2 (recommended for production)
-
-## License
-
-MIT — Made by [Appfabriek](https://appfabriek.com)
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `API_URL` | Yes | — | BvGeert API base URL |
+| `REGISTRATION_TOKEN` | No | — | Saved token from registration |
+| `LISTENER_TYPE` | No | `agent` | Listener type |
+| `LISTENER_NAME` | No | `ATTM Listener` | Display name |
+| `FORWARD_MODE` | No | `webhook` | `webhook` or `openclaw-cli` |
+| `WEBHOOK_URL` | No | — | Webhook endpoint for forwarding |
+| `WEBHOOK_TOKEN` | No | — | Bearer token for webhook |
+| `DEBUG` | No | `false` | Enable debug logging |

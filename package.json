@@ -1,30 +1,32 @@
 {
   "name": "agenttalktome-listener",
-  "version": "1.0.0",
-  "description": "Agent Talk To Me Listener - Connect any AI agent to mobile voice interaction",
+  "version": "2.0.0",
+  "description": "ATTM Listener - Connects an AI agent to mobile devices via the BvGeert pairing API",
   "type": "module",
   "main": "index.js",
   "bin": {
-    "agenttalktome-listener": "./index.js"
+    "attm-listener": "./index.js"
   },
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "test": "node test.js"
+    "test": "node --test 'test/*.test.js'"
   },
   "keywords": [
-    "openvoice",
-    "openclaw",
+    "attm",
     "agent",
-    "poller",
-    "voice-assistant"
+    "listener",
+    "voice-assistant",
+    "actioncable"
   ],
-  "author": "Geert Wirken",
+  "author": "Appfabriek",
   "license": "MIT",
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "@rails/actioncable": "^8.0.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }
