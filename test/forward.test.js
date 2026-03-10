@@ -78,4 +78,26 @@ describe("forward", () => {
       message: /Unknown forward mode/,
     });
   });
+
+  it("passes AbortSignal timeout to webhook fetch", async () => {
+    let capturedOptions;
+    mockFetch.mock.mockImplementation((_url, options) => {
+      capturedOptions = options;
+      return Promise.resolve({
+        ok: true,
+        text: () => Promise.resolve("ok"),
+      });
+    });
+
+    const config = {
+      forwardMode: "webhook",
+      webhookUrl: "http://localhost:18888/hooks/wake",
+      debug: false,
+    };
+
+    await forward(config, "test");
+
+    // Verify AbortSignal is present (timeout)
+    assert.ok(capturedOptions.signal, "fetch should have an AbortSignal");
+  });
 });
