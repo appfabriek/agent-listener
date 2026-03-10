@@ -23,6 +23,9 @@ if (!config.apiUrl) {
 
 const log = (...args) => config.debug && console.log("🐛", ...args);
 
+// Track active cable connections by pairing ID
+const activeCables = new Map();
+
 async function main() {
   console.log("🤖 Agent Listener starting...");
   console.log(`📡 API: ${config.apiUrl}`);
@@ -45,7 +48,6 @@ async function main() {
     console.log(`   REGISTRATION_TOKEN=${token}`);
     console.log(`   IDENTIFIER=${identifier}`);
   } else {
-    // Use stored identifier, or retrieve from heartbeat
     identifier = config.identifier;
     if (!identifier) {
       console.error("❌ IDENTIFIER is required in .env when using REGISTRATION_TOKEN");
@@ -57,16 +59,10 @@ async function main() {
     console.log(`✅ Reconnected: ${identifier}`);
   }
 
-  // Step 2: Get active pairings
-  const pairings = await getPairings(config.apiUrl, token, identifier);
-  console.log(`📱 Active pairings: ${pairings.length}`);
+  // Step 2: Get active pairings and connect
+  await syncPairings(token, identifier);
 
-  if (pairings.length === 0) {
-    console.log("⏳ No paired devices yet. Waiting for pairing...");
-    console.log("   Use the pairing API to connect a device.");
-  }
-
-  // Step 3: Start heartbeat loop
+  // Step 3: Combined heartbeat + pairing sync loop (every 60s)
   const heartbeatInterval = setInterval(async () => {
     try {
       await heartbeat(config.apiUrl, token, identifier);
@@ -74,49 +70,148 @@ async function main() {
     } catch (err) {
       console.error("❌ Heartbeat failed:", err.message);
     }
+
+    // Check for new pairings
+    try {
+      await syncPairings(token, identifier);
+    } catch (err) {
+      console.error("❌ Pairing sync failed:", err.message);
+    }
   }, 60_000);
-
-  // Step 4: Connect to ActionCable for each pairing
-  const cables = [];
-  for (const pairing of pairings) {
-    log(`Connecting cable for pairing ${pairing.id}...`);
-    const cable = await connectCable(config.apiUrl, token, pairing.id, async (message) => {
-      // Only handle messages directed to us (to_listener)
-      if (message.direction !== "to_listener") return;
-
-      console.log(`📨 Message from device: ${message.content.substring(0, 80)}`);
-
-      try {
-        const response = await forward(config, message.content);
-        if (response) {
-          log(`💬 Response: ${response.substring(0, 80)}`);
-          cable.send({
-            content: response,
-            content_type: "text",
-          });
-          console.log("✅ Response sent");
-        }
-      } catch (err) {
-        console.error("❌ Forward failed:", err.message);
-      }
-    });
-    cables.push(cable);
-    console.log(`🔌 Connected to pairing ${pairing.id} (device: ${pairing.device.name || pairing.device.identifier})`);
-  }
 
   // Graceful shutdown
   const shutdown = () => {
     console.log("👋 Shutting down...");
     clearInterval(heartbeatInterval);
-    cables.forEach((c) => c.disconnect());
+    for (const [id, cable] of activeCables) {
+      cable.disconnect();
+    }
+    activeCables.clear();
     process.exit(0);
   };
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  // Keep alive
   console.log("🟢 Listener running. Press Ctrl+C to stop.");
+}
+
+/**
+ * Sync pairings: connect to new ones, disconnect removed ones
+ */
+async function syncPairings(token, identifier) {
+  const pairings = await getPairings(config.apiUrl, token, identifier);
+  const currentIds = new Set(pairings.map((p) => p.id));
+
+  // Connect new pairings
+  for (const pairing of pairings) {
+    if (activeCables.has(pairing.id)) continue;
+
+    console.log(`📱 New pairing detected: ${pairing.id} (device: ${pairing.device?.name || pairing.device?.identifier || "unknown"})`);
+    connectPairing(config.apiUrl, token, pairing);
+  }
+
+  // Disconnect removed pairings
+  for (const [id, cable] of activeCables) {
+    if (!currentIds.has(id)) {
+      console.log(`📱 Pairing ${id} removed, disconnecting...`);
+      cable.disconnect();
+      activeCables.delete(id);
+    }
+  }
+
+  if (activeCables.size === 0 && pairings.length === 0) {
+    console.log("⏳ No paired devices yet. Will check again in 60s.");
+  }
+}
+
+/**
+ * Connect a cable for a single pairing with message forwarding
+ */
+function connectPairing(apiUrl, token, pairing) {
+  const cable = connectCable(apiUrl, token, pairing.id, async (message) => {
+    // Only handle messages directed to us (to_listener)
+    if (message.direction !== "to_listener") return;
+
+    // Handle control messages separately
+    if (message.content_type === "control") {
+      handleControlResponse(pairing.id, message);
+      return;
+    }
+
+    console.log(`📨 Message from device (pairing ${pairing.id}): ${message.content.substring(0, 80)}`);
+
+    try {
+      const response = await forward(config, message.content);
+      if (response) {
+        log(`💬 Response: ${response.substring(0, 80)}`);
+        const sent = cable.send({
+          content: response,
+          content_type: "text",
+        });
+        if (sent) {
+          console.log("✅ Response sent");
+        } else {
+          console.warn("⚠️ Response queued (WebSocket reconnecting)");
+        }
+      }
+    } catch (err) {
+      console.error("❌ Forward failed:", err.message);
+    }
+  });
+
+  // Send initial ping after subscribing to verify device is responsive
+  cable.on("subscribed", () => {
+    sendControlMessage(cable, "ping");
+  });
+
+  activeCables.set(pairing.id, cable);
+  console.log(`🔌 Connected to pairing ${pairing.id}`);
+}
+
+/**
+ * Send a control message to the device
+ */
+function sendControlMessage(cable, action, payload = {}) {
+  const content = JSON.stringify({ action, payload });
+  return cable.send({
+    content,
+    content_type: "control",
+  });
+}
+
+/**
+ * Handle control responses from the device
+ */
+function handleControlResponse(pairingId, message) {
+  try {
+    const control = JSON.parse(message.content);
+    log(`🎛️ Control response from pairing ${pairingId}: ${control.action}`);
+
+    switch (control.action) {
+      case "pong":
+        console.log(`📱 Pairing ${pairingId} pong: ${JSON.stringify(control.payload)}`);
+        break;
+      case "logs":
+        console.log(`📱 Pairing ${pairingId} device logs:`);
+        if (control.payload) {
+          for (const [key, value] of Object.entries(control.payload)) {
+            console.log(`   ${key}: ${value}`);
+          }
+        }
+        break;
+      case "reconnect_ack":
+        console.log(`📱 Pairing ${pairingId}: device is reconnecting`);
+        break;
+      case "sync_ack":
+        console.log(`📱 Pairing ${pairingId}: device is syncing messages`);
+        break;
+      default:
+        log(`📱 Pairing ${pairingId} unknown control: ${control.action}`);
+    }
+  } catch {
+    console.warn(`⚠️ Invalid control response from pairing ${pairingId}`);
+  }
 }
 
 main().catch((err) => {
