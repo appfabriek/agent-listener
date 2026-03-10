@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "dotenv/config";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { register, heartbeat, getPairings } from "./lib/api.js";
 import { connectCable } from "./lib/cable.js";
 import { forward } from "./lib/forward.js";
@@ -7,10 +8,11 @@ import { forward } from "./lib/forward.js";
 const config = {
   apiUrl: process.env.API_URL,
   registrationToken: process.env.REGISTRATION_TOKEN,
-  identifier: process.env.IDENTIFIER,
+  identifier: process.env.IDENTIFIER || process.env.LISTENER_IDENTIFIER,
   listenerType: process.env.LISTENER_TYPE || "agent",
   listenerName: process.env.LISTENER_NAME || "Agent Listener",
   forwardMode: process.env.FORWARD_MODE || "webhook",
+  openclawAgent: process.env.OPENCLAW_AGENT || "main",
   webhookUrl: process.env.WEBHOOK_URL,
   webhookToken: process.env.WEBHOOK_TOKEN,
   debug: process.env.DEBUG === "true",
@@ -25,6 +27,49 @@ const log = (...args) => config.debug && console.log("🐛", ...args);
 
 // Track active cable connections by pairing ID
 const activeCables = new Map();
+
+/**
+ * Persist registration token to .env file after first registration.
+ * Updates REGISTRATION_TOKEN if the file exists, or creates it from .env.example.
+ */
+function persistCredentialsToEnv(token, identifier) {
+  const envPath = new URL(".env", import.meta.url).pathname;
+  try {
+    if (existsSync(envPath)) {
+      let content = readFileSync(envPath, "utf-8");
+      // Update or append REGISTRATION_TOKEN
+      if (content.includes("REGISTRATION_TOKEN=")) {
+        content = content.replace(/^REGISTRATION_TOKEN=.*$/m, `REGISTRATION_TOKEN=${token}`);
+      } else {
+        content += `\nREGISTRATION_TOKEN=${token}\n`;
+      }
+      // Update or append IDENTIFIER
+      if (content.includes("IDENTIFIER=")) {
+        content = content.replace(/^IDENTIFIER=.*$/m, `IDENTIFIER=${identifier}`);
+      } else {
+        content += `IDENTIFIER=${identifier}\n`;
+      }
+      writeFileSync(envPath, content);
+    } else {
+      // Create .env from .env.example if it exists, otherwise create minimal .env
+      const examplePath = new URL(".env.example", import.meta.url).pathname;
+      let content;
+      if (existsSync(examplePath)) {
+        content = readFileSync(examplePath, "utf-8");
+        content = content.replace(/^REGISTRATION_TOKEN=.*$/m, `REGISTRATION_TOKEN=${token}`);
+        content = content.replace(/^IDENTIFIER=.*$/m, `IDENTIFIER=${identifier}`);
+      } else {
+        content = `API_URL=${config.apiUrl}\nREGISTRATION_TOKEN=${token}\nIDENTIFIER=${identifier}\n`;
+      }
+      writeFileSync(envPath, content);
+    }
+    console.log(`💾 Credentials saved to .env`);
+  } catch (err) {
+    console.warn(`⚠️  Could not save credentials to .env: ${err.message}`);
+    console.log(`   Save manually: REGISTRATION_TOKEN=${token}`);
+    console.log(`   Save manually: IDENTIFIER=${identifier}`);
+  }
+}
 
 async function main() {
   console.log("🤖 Agent Listener starting...");
@@ -44,19 +89,28 @@ async function main() {
     token = result.registration_token;
     identifier = result.identifier;
     console.log(`✅ Registered: ${identifier}`);
-    console.log(`🔑 Save these in .env to reconnect later:`);
-    console.log(`   REGISTRATION_TOKEN=${token}`);
-    console.log(`   IDENTIFIER=${identifier}`);
+    console.log(`🔑 Token: ${token}`);
+
+    // Auto-persist credentials to .env
+    persistCredentialsToEnv(token, identifier);
   } else {
     identifier = config.identifier;
-    if (!identifier) {
-      console.error("❌ IDENTIFIER is required in .env when using REGISTRATION_TOKEN");
-      console.error("   Re-register by removing REGISTRATION_TOKEN from .env");
-      process.exit(1);
+    if (identifier) {
+      const hb = await heartbeat(config.apiUrl, token, identifier);
+      identifier = hb.identifier;
+      console.log(`✅ Reconnected: ${identifier}`);
+    } else {
+      // Fallback: no identifier saved, re-register
+      console.log("⚠️  No IDENTIFIER found, re-registering...");
+      const result = await register(config.apiUrl, {
+        type: config.listenerType,
+        name: config.listenerName,
+      });
+      token = result.registration_token;
+      identifier = result.identifier;
+      console.log(`✅ Re-registered: ${identifier}`);
+      persistCredentialsToEnv(token, identifier);
     }
-    const hb = await heartbeat(config.apiUrl, token, identifier);
-    identifier = hb.identifier;
-    console.log(`✅ Reconnected: ${identifier}`);
   }
 
   // Step 2: Get active pairings and connect
