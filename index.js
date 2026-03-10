@@ -7,6 +7,7 @@ import { forward } from "./lib/forward.js";
 const config = {
   apiUrl: process.env.API_URL,
   registrationToken: process.env.REGISTRATION_TOKEN,
+  identifier: process.env.IDENTIFIER,
   listenerType: process.env.LISTENER_TYPE || "agent",
   listenerName: process.env.LISTENER_NAME || "Agent Listener",
   forwardMode: process.env.FORWARD_MODE || "webhook",
@@ -40,11 +41,18 @@ async function main() {
     token = result.registration_token;
     identifier = result.identifier;
     console.log(`✅ Registered: ${identifier}`);
-    console.log(`🔑 Token: ${token}`);
-    console.log("   Save this as REGISTRATION_TOKEN in .env to reconnect later.");
+    console.log(`🔑 Save these in .env to reconnect later:`);
+    console.log(`   REGISTRATION_TOKEN=${token}`);
+    console.log(`   IDENTIFIER=${identifier}`);
   } else {
-    // Get identifier from heartbeat
-    const hb = await heartbeat(config.apiUrl, token);
+    // Use stored identifier, or retrieve from heartbeat
+    identifier = config.identifier;
+    if (!identifier) {
+      console.error("❌ IDENTIFIER is required in .env when using REGISTRATION_TOKEN");
+      console.error("   Re-register by removing REGISTRATION_TOKEN from .env");
+      process.exit(1);
+    }
+    const hb = await heartbeat(config.apiUrl, token, identifier);
     identifier = hb.identifier;
     console.log(`✅ Reconnected: ${identifier}`);
   }
