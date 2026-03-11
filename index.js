@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { register, heartbeat, getPairings } from "./lib/api.js";
-import { connectCable } from "./lib/cable.js";
+import { connectCable, connectListenerChannel } from "./lib/cable.js";
 import { forward } from "./lib/forward.js";
 
 const config = {
@@ -27,6 +27,9 @@ const log = (...args) => config.debug && console.log("🐛", ...args);
 
 // Track active cable connections by pairing ID
 const activeCables = new Map();
+
+// Track device diagnostics per pairing (updated via status_report + logs)
+const deviceDiagnostics = new Map();
 
 /**
  * Persist registration token to .env file after first registration.
@@ -116,7 +119,19 @@ async function main() {
   // Step 2: Get active pairings and connect
   await syncPairings(token, identifier);
 
-  // Step 3: Combined heartbeat + pairing sync loop (every 60s)
+  // Step 3: Subscribe to ListenerChannel for instant new-pairing notifications
+  const listenerCable = connectListenerChannel(config.apiUrl, token, (event) => {
+    if (event.type === "new_pairing") {
+      console.log(`📱 New pairing via ListenerChannel: ${event.pairing_id} (device: ${event.device?.name || "unknown"})`);
+      if (!activeCables.has(event.pairing_id)) {
+        connectPairing(config.apiUrl, token, { id: event.pairing_id, device: event.device });
+      }
+    } else {
+      log(`📡 ListenerChannel event: ${event.type}`);
+    }
+  });
+
+  // Step 4: Heartbeat every 60s
   const heartbeatInterval = setInterval(async () => {
     try {
       await heartbeat(config.apiUrl, token, identifier);
@@ -124,8 +139,10 @@ async function main() {
     } catch (err) {
       console.error("❌ Heartbeat failed:", err.message);
     }
+  }, 60_000);
 
-    // Check for new pairings
+  // Step 5: Sync pairings every 60s (fallback for missed ListenerChannel events)
+  const syncInterval = setInterval(async () => {
     try {
       await syncPairings(token, identifier);
     } catch (err) {
@@ -137,6 +154,8 @@ async function main() {
   const shutdown = () => {
     console.log("👋 Shutting down...");
     clearInterval(heartbeatInterval);
+    clearInterval(syncInterval);
+    listenerCable.disconnect();
     for (const [id, cable] of activeCables) {
       cable.disconnect();
     }
@@ -147,7 +166,16 @@ async function main() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
+  // SIGUSR1: request diagnostics from all connected devices
+  process.on("SIGUSR1", () => {
+    console.log("📊 Requesting diagnostics from all devices...");
+    for (const [id, cable] of activeCables) {
+      sendControlMessage(cable, "request_logs");
+    }
+  });
+
   console.log("🟢 Listener running. Press Ctrl+C to stop.");
+  console.log("   Send SIGUSR1 to request device diagnostics.");
 }
 
 /**
@@ -243,6 +271,14 @@ function handleControlResponse(pairingId, message) {
     log(`🎛️ Control response from pairing ${pairingId}: ${control.action}`);
 
     switch (control.action) {
+      case "ping": {
+        console.log(`📱 Pairing ${pairingId} ping received, sending pong`);
+        const cable = activeCables.get(pairingId);
+        if (cable) {
+          sendControlMessage(cable, "pong", { status: "ok" });
+        }
+        break;
+      }
       case "pong":
         console.log(`📱 Pairing ${pairingId} pong: ${JSON.stringify(control.payload)}`);
         break;
@@ -252,6 +288,13 @@ function handleControlResponse(pairingId, message) {
           for (const [key, value] of Object.entries(control.payload)) {
             console.log(`   ${key}: ${value}`);
           }
+          storeDiagnostics(pairingId, control.payload);
+        }
+        break;
+      case "status_report":
+        console.log(`📊 Pairing ${pairingId} status: event=${control.payload?.event} ws=${control.payload?.ws_state} build=${control.payload?.build}`);
+        if (control.payload) {
+          storeDiagnostics(pairingId, control.payload);
         }
         break;
       case "reconnect_ack":
@@ -265,6 +308,36 @@ function handleControlResponse(pairingId, message) {
     }
   } catch {
     console.warn(`⚠️ Invalid control response from pairing ${pairingId}`);
+  }
+}
+
+/**
+ * Store device diagnostics and persist to file for agent access
+ */
+function storeDiagnostics(pairingId, payload) {
+  const entry = {
+    ...payload,
+    pairing_id: String(pairingId),
+    received_at: new Date().toISOString(),
+  };
+  deviceDiagnostics.set(pairingId, entry);
+
+  // Write all diagnostics to file for agent to read
+  const diagPath = new URL("device-diagnostics.json", import.meta.url).pathname;
+  try {
+    const allDiag = {};
+    for (const [id, diag] of deviceDiagnostics) {
+      allDiag[`pairing_${id}`] = diag;
+    }
+    allDiag._listener = {
+      active_pairings: [...activeCables.keys()],
+      uptime_seconds: Math.floor(process.uptime()),
+      updated_at: new Date().toISOString(),
+    };
+    writeFileSync(diagPath, JSON.stringify(allDiag, null, 2));
+    log(`📁 Diagnostics saved to device-diagnostics.json`);
+  } catch (err) {
+    console.warn(`⚠️ Could not write diagnostics: ${err.message}`);
   }
 }
 
