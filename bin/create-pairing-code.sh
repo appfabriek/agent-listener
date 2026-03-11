@@ -9,11 +9,40 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-source "$SCRIPT_DIR/.env"
+ENV_FILE="$SCRIPT_DIR/.env"
 
-TOKEN="${REGISTRATION_TOKEN:?REGISTRATION_TOKEN not set in .env — start the listener first with 'npm start'}"
-IDENTIFIER="${LISTENER_IDENTIFIER:-${IDENTIFIER:?IDENTIFIER not set in .env — start the listener first with 'npm start'}}"
-API="${API_URL:?API_URL not set in .env}"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Error: .env not found at $ENV_FILE" >&2
+  echo "Run 'npm start' first to register and generate credentials." >&2
+  exit 1
+fi
+
+# Read .env safely (handles unquoted values with spaces)
+get_env() {
+  grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | sed "s/^$1=//" | sed 's/^["'\''"]//;s/["'\''"]$//' || true
+}
+
+TOKEN=$(get_env REGISTRATION_TOKEN)
+IDENTIFIER=$(get_env LISTENER_IDENTIFIER)
+[ -z "$IDENTIFIER" ] && IDENTIFIER=$(get_env IDENTIFIER)
+API=$(get_env API_URL)
+
+if [ -z "$TOKEN" ]; then
+  echo "Error: REGISTRATION_TOKEN not found in .env" >&2
+  echo "Run 'npm start' first to register and generate credentials." >&2
+  exit 1
+fi
+
+if [ -z "$IDENTIFIER" ]; then
+  echo "Error: IDENTIFIER not found in .env" >&2
+  echo "Run 'npm start' first to register and generate credentials." >&2
+  exit 1
+fi
+
+if [ -z "$API" ]; then
+  echo "Error: API_URL not found in .env" >&2
+  exit 1
+fi
 
 RESPONSE=$(curl -s -X POST "$API/api/v1/listeners/$IDENTIFIER/pair" \
   -H "Authorization: Bearer $TOKEN" \
@@ -28,8 +57,7 @@ if [ -z "$CODE" ]; then
   echo "" >&2
   echo "Make sure:" >&2
   echo "  1. The listener has been started at least once (npm start)" >&2
-  echo "  2. REGISTRATION_TOKEN and IDENTIFIER are set in .env" >&2
-  echo "  3. API_URL ($API) is reachable" >&2
+  echo "  2. API_URL ($API) is reachable" >&2
   exit 1
 fi
 
