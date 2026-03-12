@@ -48,3 +48,25 @@ describe("selectAgent", () => {
     assert.equal(selectAgent([], "custom-agent"), "custom-agent");
   });
 });
+
+describe("discoverAgents", () => {
+  it("returns empty array when openclaw is not available", async () => {
+    const { discoverAgents } = await import("../lib/agent-discovery.js");
+
+    // Save original PATH
+    const originalPath = process.env.PATH;
+
+    // Set PATH to empty so `openclaw` cannot be found
+    process.env.PATH = "";
+    try {
+      const agents = await discoverAgents();
+      assert.deepEqual(agents, [], "Should return empty array when openclaw is not in PATH");
+    } finally {
+      // Restore PATH
+      process.env.PATH = originalPath;
+    }
+  });
+
+  // NOTE: Testing discoverAgents with a real `openclaw` binary requires
+  // integration testing with the OpenClaw CLI installed.
+});
