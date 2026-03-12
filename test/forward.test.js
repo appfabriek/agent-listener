@@ -1,6 +1,6 @@
 import { describe, it, mock, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { forward } from "../lib/forward.js";
+import { forward, forwardGateway } from "../lib/forward.js";
 
 let mockFetch;
 
@@ -77,6 +77,67 @@ describe("forward", () => {
     await assert.rejects(() => forward({ forwardMode: "unknown" }, "test"), {
       message: /Unknown forward mode/,
     });
+  });
+
+  it("forwards via gateway when connected", async () => {
+    const mockGateway = {
+      isConnected: true,
+      sendMessage: mock.fn(() => Promise.resolve("Gateway response")),
+    };
+
+    const config = {
+      forwardMode: "gateway",
+      gateway: mockGateway,
+      openclawAgent: "main",
+      pairingId: 42,
+    };
+
+    const result = await forward(config, "Hoi agent");
+
+    assert.equal(result, "Gateway response");
+    assert.equal(mockGateway.sendMessage.mock.calls.length, 1);
+    const [agentId, content, pairingId] = mockGateway.sendMessage.mock.calls[0].arguments;
+    assert.equal(agentId, "main");
+    assert.equal(content, "Hoi agent");
+    assert.equal(pairingId, 42);
+  });
+
+  it("throws when gateway is not connected", async () => {
+    const mockGateway = { isConnected: false };
+
+    const config = {
+      forwardMode: "gateway",
+      gateway: mockGateway,
+      openclawAgent: "main",
+      pairingId: 42,
+    };
+
+    await assert.rejects(() => forward(config, "test"), {
+      message: /Gateway not connected/,
+    });
+  });
+
+  it("throws when gateway is null", async () => {
+    const config = {
+      forwardMode: "gateway",
+      gateway: null,
+      openclawAgent: "main",
+      pairingId: 42,
+    };
+
+    await assert.rejects(() => forward(config, "test"), {
+      message: /Gateway not connected/,
+    });
+  });
+
+  it("forwardGateway returns null for empty response", async () => {
+    const mockGateway = {
+      isConnected: true,
+      sendMessage: mock.fn(() => Promise.resolve("")),
+    };
+
+    const result = await forwardGateway(mockGateway, "main", "test", 1);
+    assert.equal(result, null);
   });
 
   it("passes AbortSignal timeout to webhook fetch", async () => {

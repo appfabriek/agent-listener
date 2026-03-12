@@ -15,7 +15,7 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit the configuration file (`.env`):
 
 ```bash
 API_URL=https://staging.agenttalktome.com
@@ -30,17 +30,44 @@ Start:
 npm start
 ```
 
-On first run, credentials are auto-generated and saved to `.env`.
+On first run, credentials are auto-generated and saved to the configuration file (`.env`).
 
-## Generate a Pairing Code
+## CLI Commands
 
-With the listener running, open a second terminal:
+The `agent-listener` command provides a complete management interface:
 
 ```bash
-./bin/create-pairing-code.sh
+agent-listener install          # Install as daemon (launchd/systemd)
+agent-listener uninstall        # Remove daemon
+agent-listener start            # Start the listener
+agent-listener stop             # Stop the listener
+agent-listener status           # Show running status, uptime, config
+agent-listener create-pairing   # Create a pairing code for the iOS app
+agent-listener config           # Show current configuration
+agent-listener logs             # Show recent log output
+agent-listener help             # Show all commands
+```
+
+### Install as Daemon
+
+```bash
+agent-listener install
+```
+
+On macOS, this creates a launchd plist in `~/Library/LaunchAgents/` so the listener starts on login and restarts on crash. On Linux, it creates a systemd user service.
+
+### Generate a Pairing Code
+
+```bash
+agent-listener create-pairing
 ```
 
 Give the 6-digit code to your user. They enter it in the iOS app to connect.
+
+For JSON output (useful for scripts and AI agents):
+```bash
+agent-listener create-pairing --json
+```
 
 ## How Messages Flow
 
@@ -77,7 +104,15 @@ Your webhook should return the agent's response as plain text.
 
 ## Production Deployment
 
-### PM2
+### Recommended: CLI install
+
+```bash
+agent-listener install
+```
+
+This auto-detects your platform and installs the appropriate daemon (launchd on macOS, systemd on Linux).
+
+### PM2 (alternative)
 
 ```bash
 npm install -g pm2
@@ -85,11 +120,11 @@ pm2 start ecosystem.config.cjs
 pm2 save && pm2 startup
 ```
 
-### launchd (macOS)
+### Manual launchd (macOS)
 
-See [docs/agent-setup.md](https://agenttalktome.com/setup) for a launchd plist template.
+See [docs/agent-setup.md](https://agenttalktome.com/setup) for a launchd plist template, or use `agent-listener install` which generates it automatically.
 
-### systemd (Linux)
+### Manual systemd (Linux)
 
 ```ini
 [Unit]
@@ -106,13 +141,17 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
+Or use `agent-listener install` which generates this automatically.
+
 ## Configuration
+
+All settings are stored in the `.env` configuration file in the project root. Copy `.env.example` to `.env` and adjust the values for your setup.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `API_URL` | Yes | — | ATTM API base URL |
 | `REGISTRATION_TOKEN` | No | — | Auto-saved after first registration |
-| `IDENTIFIER` | No | — | Auto-saved after first registration |
+| `LISTENER_IDENTIFIER` | No | — | Auto-saved after first registration |
 | `LISTENER_NAME` | No | `Agent Listener` | Name shown in the iOS app |
 | `LISTENER_TYPE` | No | `agent` | Listener type |
 | `FORWARD_MODE` | No | `webhook` | `openclaw-cli` or `webhook` |

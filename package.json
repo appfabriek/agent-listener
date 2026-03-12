@@ -1,11 +1,16 @@
 {
   "name": "agent-listener",
   "version": "2.0.0",
-  "description": "Agent Listener - Connects an AI agent to mobile devices via the AgentTalkToMe pairing API",
+  "description": "Connect your AI agent to mobile voice interaction via Agent Talk To Me",
+  "homepage": "https://agenttalktome.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/appfabriek/agent-listener.git"
+  },
   "type": "module",
   "main": "index.js",
   "bin": {
-    "agent-listener": "./index.js"
+    "agent-listener": "./bin/cli.js"
   },
   "scripts": {
     "start": "node index.js",
@@ -22,7 +27,6 @@
   "author": "Appfabriek",
   "license": "MIT",
   "dependencies": {
-    "@rails/actioncable": "^8.0.0",
     "dotenv": "^16.4.5",
     "ws": "^8.18.0"
   },

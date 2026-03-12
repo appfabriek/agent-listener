@@ -18,8 +18,9 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # Read .env safely (handles unquoted values with spaces)
+# Uses POSIX-compatible sed syntax (no GNU/BSD-specific extensions)
 get_env() {
-  grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | sed "s/^$1=//" | sed 's/^["'\''"]//;s/["'\''"]$//' || true
+  grep "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | sed -e "s/^${1}=//" -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true
 }
 
 TOKEN=$(get_env REGISTRATION_TOKEN)

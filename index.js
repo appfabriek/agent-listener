@@ -1,32 +1,77 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import dotenv from "dotenv";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { register, heartbeat, getPairings } from "./lib/api.js";
+import { register, heartbeat, getPairings, updateAgents, registerRestart } from "./lib/api.js";
 import { connectCable, connectListenerChannel } from "./lib/cable.js";
 import { forward } from "./lib/forward.js";
+import { GatewayConnection } from "./lib/gateway.js";
+import { discoverAgents, selectAgent } from "./lib/agent-discovery.js";
+
+// Load config: prefer agent-listener.conf, fall back to .env
+const confPath = new URL("agent-listener.conf", import.meta.url).pathname;
+const envPath = new URL(".env", import.meta.url).pathname;
+if (existsSync(confPath)) {
+  dotenv.config({ path: confPath });
+} else {
+  dotenv.config({ path: envPath });
+}
+
+/**
+ * Validate that all required environment variables are set and non-empty.
+ * Exits with code 1 if any are missing.
+ */
+function validateEnv() {
+  const required = ["API_URL", "REGISTRATION_TOKEN", "LISTENER_IDENTIFIER"];
+  const missing = required.filter((key) => !process.env[key]?.trim());
+  if (missing.length > 0) {
+    console.error(`❌ Missing required environment variables: ${missing.join(", ")}`);
+    console.error("   Set these in agent-listener.conf (or .env) or environment before starting.");
+    process.exit(1);
+  }
+}
+
+validateEnv();
 
 const config = {
   apiUrl: process.env.API_URL,
   registrationToken: process.env.REGISTRATION_TOKEN,
-  identifier: process.env.IDENTIFIER || process.env.LISTENER_IDENTIFIER,
+  identifier: process.env.LISTENER_IDENTIFIER || process.env.IDENTIFIER,
   listenerType: process.env.LISTENER_TYPE || "agent",
   listenerName: process.env.LISTENER_NAME || "Agent Listener",
-  forwardMode: process.env.FORWARD_MODE || "webhook",
+  forwardMode: process.env.FORWARD_MODE || "gateway",
   openclawAgent: process.env.OPENCLAW_AGENT || "main",
   webhookUrl: process.env.WEBHOOK_URL,
   webhookToken: process.env.WEBHOOK_TOKEN,
+  gatewayUrl: process.env.GATEWAY_URL || "ws://127.0.0.1:18789",
+  gatewayAuthToken: process.env.GATEWAY_AUTH_TOKEN || undefined,
   debug: process.env.DEBUG === "true",
+  gateway: null, // Set at startup if forward mode is gateway
 };
 
-if (!config.apiUrl) {
-  console.error("❌ API_URL is required");
-  process.exit(1);
-}
+const debugLog = (...args) => config.debug && console.log("🐛", ...args);
 
-const log = (...args) => config.debug && console.log("🐛", ...args);
+/**
+ * Structured log helper — prefixes with ISO timestamp and level.
+ * Levels: INFO, WARN, ERROR, DEBUG
+ */
+function log(level, message, ...extra) {
+  const ts = new Date().toISOString();
+  const prefix = `[${ts}] [${level}]`;
+  if (level === "ERROR") {
+    console.error(prefix, message, ...extra);
+  } else if (level === "WARN") {
+    console.warn(prefix, message, ...extra);
+  } else {
+    console.log(prefix, message, ...extra);
+  }
+}
 
 // Track active cable connections by pairing ID
 const activeCables = new Map();
+
+// In-memory message queue for when OpenClaw is offline (max 50 per pairing)
+const MESSAGE_QUEUE_MAX = 50;
+const messageQueues = new Map(); // pairing_id -> [{ content, queuedAt }]
 
 // Track device diagnostics per pairing (updated via status_report + logs)
 const deviceDiagnostics = new Map();
@@ -46,11 +91,13 @@ function persistCredentialsToEnv(token, identifier) {
       } else {
         content += `\nREGISTRATION_TOKEN=${token}\n`;
       }
-      // Update or append IDENTIFIER
-      if (content.includes("IDENTIFIER=")) {
-        content = content.replace(/^IDENTIFIER=.*$/m, `IDENTIFIER=${identifier}`);
+      // Update or append LISTENER_IDENTIFIER (also update legacy IDENTIFIER if present)
+      if (content.includes("LISTENER_IDENTIFIER=")) {
+        content = content.replace(/^LISTENER_IDENTIFIER=.*$/m, `LISTENER_IDENTIFIER=${identifier}`);
+      } else if (content.includes("IDENTIFIER=")) {
+        content = content.replace(/^IDENTIFIER=.*$/m, `LISTENER_IDENTIFIER=${identifier}`);
       } else {
-        content += `IDENTIFIER=${identifier}\n`;
+        content += `LISTENER_IDENTIFIER=${identifier}\n`;
       }
       writeFileSync(envPath, content);
     } else {
@@ -60,9 +107,9 @@ function persistCredentialsToEnv(token, identifier) {
       if (existsSync(examplePath)) {
         content = readFileSync(examplePath, "utf-8");
         content = content.replace(/^REGISTRATION_TOKEN=.*$/m, `REGISTRATION_TOKEN=${token}`);
-        content = content.replace(/^IDENTIFIER=.*$/m, `IDENTIFIER=${identifier}`);
+        content = content.replace(/^LISTENER_IDENTIFIER=.*$/m, `LISTENER_IDENTIFIER=${identifier}`);
       } else {
-        content = `API_URL=${config.apiUrl}\nREGISTRATION_TOKEN=${token}\nIDENTIFIER=${identifier}\n`;
+        content = `API_URL=${config.apiUrl}\nREGISTRATION_TOKEN=${token}\nLISTENER_IDENTIFIER=${identifier}\n`;
       }
       writeFileSync(envPath, content);
     }
@@ -70,29 +117,29 @@ function persistCredentialsToEnv(token, identifier) {
   } catch (err) {
     console.warn(`⚠️  Could not save credentials to .env: ${err.message}`);
     console.log(`   Save manually: REGISTRATION_TOKEN=${token}`);
-    console.log(`   Save manually: IDENTIFIER=${identifier}`);
+    console.log(`   Save manually: LISTENER_IDENTIFIER=${identifier}`);
   }
 }
 
 async function main() {
-  console.log("🤖 Agent Listener starting...");
-  console.log(`📡 API: ${config.apiUrl}`);
-  console.log(`🔧 Forward: ${config.forwardMode}`);
+  log("INFO", "Agent Listener starting...");
+  log("INFO", `API: ${config.apiUrl}`);
+  log("INFO", `Forward mode: ${config.forwardMode}`);
 
   // Step 1: Register or reconnect
   let token = config.registrationToken;
   let identifier;
 
   if (!token) {
-    console.log("📝 Registering new listener...");
+    log("INFO", "Registering new listener...");
     const result = await register(config.apiUrl, {
       type: config.listenerType,
       name: config.listenerName,
     });
     token = result.registration_token;
     identifier = result.identifier;
-    console.log(`✅ Registered: ${identifier}`);
-    console.log(`🔑 Token: ${token}`);
+    log("INFO", `Registered: ${identifier}`);
+    log("INFO", `Token: ${token}`);
 
     // Auto-persist credentials to .env
     persistCredentialsToEnv(token, identifier);
@@ -101,61 +148,117 @@ async function main() {
     if (identifier) {
       const hb = await heartbeat(config.apiUrl, token, identifier);
       identifier = hb.identifier;
-      console.log(`✅ Reconnected: ${identifier}`);
+      log("INFO", `Reconnected: ${identifier}`);
     } else {
       // Fallback: no identifier saved, re-register
-      console.log("⚠️  No IDENTIFIER found, re-registering...");
+      log("WARN", "No LISTENER_IDENTIFIER found, re-registering...");
       const result = await register(config.apiUrl, {
         type: config.listenerType,
         name: config.listenerName,
       });
       token = result.registration_token;
       identifier = result.identifier;
-      console.log(`✅ Re-registered: ${identifier}`);
+      log("INFO", `Re-registered: ${identifier}`);
       persistCredentialsToEnv(token, identifier);
     }
   }
 
-  // Step 2: Get active pairings and connect
+  // Step 1b: Register restart command with API
+  try {
+    const restartCommand = process.platform === "darwin"
+      ? `launchctl kickstart -k gui/${process.getuid()}/com.appfabriek.agent-listener`
+      : `systemctl --user restart agent-listener`;
+
+    await registerRestart(config.apiUrl, token, identifier, {
+      restart_command: restartCommand,
+      install_path: process.cwd(),
+      platform: process.platform,
+    });
+    log("INFO", "Restart command registered with API");
+  } catch (err) {
+    log("WARN", `Could not register restart command (${err.message}) — endpoint may not exist yet`);
+  }
+
+  // Step 2: Discover available agents
+  const agents = await discoverAgents();
+  if (agents.length > 0) {
+    const selectedId = selectAgent(agents, config.openclawAgent);
+    config.openclawAgent = selectedId;
+    log("INFO", `Discovered ${agents.length} agent(s): ${agents.map(a => `${a.emoji || ""} ${a.name}`).join(", ").trim()}`);
+    log("INFO", `Selected agent: ${selectedId}`);
+
+    // Report discovered agents to Rails API (endpoint may not exist yet)
+    try {
+      await updateAgents(config.apiUrl, token, identifier, agents);
+      log("INFO", "Agent list synced with API");
+    } catch (err) {
+      log("WARN", `Could not sync agents with API (${err.message}) — endpoint may not exist yet`);
+    }
+  } else {
+    log("INFO", `No agents discovered via CLI, using configured agent: ${config.openclawAgent}`);
+  }
+
+  // Step 3: Connect to OpenClaw Gateway (if forward mode is gateway)
+  if (config.forwardMode === "gateway") {
+    const gateway = new GatewayConnection(config.gatewayUrl, {
+      authToken: config.gatewayAuthToken,
+      debug: config.debug,
+    });
+    try {
+      await gateway.connect();
+      config.gateway = gateway;
+      log("INFO", `Gateway connected: ${config.gatewayUrl}`);
+    } catch (err) {
+      log("WARN", `Gateway connection failed: ${err.message}`);
+      log("WARN", "Falling back to openclaw-cli forward mode");
+      config.forwardMode = "openclaw-cli";
+      config.gateway = null;
+    }
+  }
+
+  // Step 4: Get active pairings and connect
   await syncPairings(token, identifier);
 
-  // Step 3: Subscribe to ListenerChannel for instant new-pairing notifications
+  // Step 5: Subscribe to ListenerChannel for instant new-pairing notifications
   const listenerCable = connectListenerChannel(config.apiUrl, token, (event) => {
     if (event.type === "new_pairing") {
-      console.log(`📱 New pairing via ListenerChannel: ${event.pairing_id} (device: ${event.device?.name || "unknown"})`);
+      log("INFO", `New pairing via ListenerChannel: ${event.pairing_id} (device: ${event.device?.name || "unknown"})`);
       if (!activeCables.has(event.pairing_id)) {
         connectPairing(config.apiUrl, token, { id: event.pairing_id, device: event.device });
       }
     } else {
-      log(`📡 ListenerChannel event: ${event.type}`);
+      debugLog(`ListenerChannel event: ${event.type}`);
     }
   });
 
-  // Step 4: Heartbeat every 60s
+  // Step 6: Heartbeat every 60s
   const heartbeatInterval = setInterval(async () => {
     try {
       await heartbeat(config.apiUrl, token, identifier);
-      log("💓 Heartbeat OK");
+      debugLog("Heartbeat OK");
     } catch (err) {
-      console.error("❌ Heartbeat failed:", err.message);
+      log("ERROR", "Heartbeat failed:", err.message);
     }
   }, 60_000);
 
-  // Step 5: Sync pairings every 60s (fallback for missed ListenerChannel events)
+  // Step 7: Sync pairings every 60s (fallback for missed ListenerChannel events)
   const syncInterval = setInterval(async () => {
     try {
       await syncPairings(token, identifier);
     } catch (err) {
-      console.error("❌ Pairing sync failed:", err.message);
+      log("ERROR", "Pairing sync failed:", err.message);
     }
   }, 60_000);
 
   // Graceful shutdown
   const shutdown = () => {
-    console.log("👋 Shutting down...");
+    log("INFO", "Shutting down...");
     clearInterval(heartbeatInterval);
     clearInterval(syncInterval);
     listenerCable.disconnect();
+    if (config.gateway) {
+      config.gateway.disconnect();
+    }
     for (const [id, cable] of activeCables) {
       cable.disconnect();
     }
@@ -174,8 +277,8 @@ async function main() {
     }
   });
 
-  console.log("🟢 Listener running. Press Ctrl+C to stop.");
-  console.log("   Send SIGUSR1 to request device diagnostics.");
+  log("INFO", "Listener running. Press Ctrl+C to stop.");
+  log("INFO", "Send SIGUSR1 to request device diagnostics.");
 }
 
 /**
@@ -189,21 +292,21 @@ async function syncPairings(token, identifier) {
   for (const pairing of pairings) {
     if (activeCables.has(pairing.id)) continue;
 
-    console.log(`📱 New pairing detected: ${pairing.id} (device: ${pairing.device?.name || pairing.device?.identifier || "unknown"})`);
+    log("INFO", `New pairing detected: ${pairing.id} (device: ${pairing.device?.name || pairing.device?.identifier || "unknown"})`);
     connectPairing(config.apiUrl, token, pairing);
   }
 
   // Disconnect removed pairings
   for (const [id, cable] of activeCables) {
     if (!currentIds.has(id)) {
-      console.log(`📱 Pairing ${id} removed, disconnecting...`);
+      log("INFO", `Pairing ${id} removed, disconnecting...`);
       cable.disconnect();
       activeCables.delete(id);
     }
   }
 
   if (activeCables.size === 0 && pairings.length === 0) {
-    console.log("⏳ No paired devices yet. Will check again in 60s.");
+    log("INFO", "No paired devices yet. Will check again in 60s.");
   }
 }
 
@@ -221,24 +324,30 @@ function connectPairing(apiUrl, token, pairing) {
       return;
     }
 
-    console.log(`📨 Message from device (pairing ${pairing.id}): ${message.content.substring(0, 80)}`);
+    log("INFO", `Message from device (pairing ${pairing.id}): ${message.content.substring(0, 80)}`);
 
     try {
-      const response = await forward(config, message.content);
+      // Pass pairingId for gateway mode's idempotency key + session key
+      const forwardConfig = { ...config, pairingId: pairing.id };
+      const response = await forward(forwardConfig, message.content);
       if (response) {
-        log(`💬 Response: ${response.substring(0, 80)}`);
+        debugLog(`Response: ${response.substring(0, 80)}`);
         const sent = cable.send({
           content: response,
           content_type: "text",
         });
         if (sent) {
-          console.log("✅ Response sent");
+          log("INFO", `Response sent to pairing ${pairing.id}`);
         } else {
-          console.warn("⚠️ Response queued (WebSocket reconnecting)");
+          log("WARN", `Response queued (WebSocket reconnecting) for pairing ${pairing.id}`);
         }
       }
+      // After successful forward, try to drain the queue
+      await drainMessageQueue(cable, pairing.id);
     } catch (err) {
-      console.error("❌ Forward failed:", err.message);
+      log("ERROR", `Forward failed for pairing ${pairing.id}:`, err.message);
+      // Queue the message for retry
+      enqueueMessage(pairing.id, message.content, cable);
     }
   });
 
@@ -248,7 +357,7 @@ function connectPairing(apiUrl, token, pairing) {
   });
 
   activeCables.set(pairing.id, cable);
-  console.log(`🔌 Connected to pairing ${pairing.id}`);
+  log("INFO", `Connected to pairing ${pairing.id}`);
 }
 
 /**
@@ -268,7 +377,7 @@ function sendControlMessage(cable, action, payload = {}) {
 function handleControlResponse(pairingId, message) {
   try {
     const control = JSON.parse(message.content);
-    log(`🎛️ Control response from pairing ${pairingId}: ${control.action}`);
+    debugLog(`Control response from pairing ${pairingId}: ${control.action}`);
 
     switch (control.action) {
       case "ping": {
@@ -304,7 +413,7 @@ function handleControlResponse(pairingId, message) {
         console.log(`📱 Pairing ${pairingId}: device is syncing messages`);
         break;
       default:
-        log(`📱 Pairing ${pairingId} unknown control: ${control.action}`);
+        debugLog(`Pairing ${pairingId} unknown control: ${control.action}`);
     }
   } catch {
     console.warn(`⚠️ Invalid control response from pairing ${pairingId}`);
@@ -335,13 +444,73 @@ function storeDiagnostics(pairingId, payload) {
       updated_at: new Date().toISOString(),
     };
     writeFileSync(diagPath, JSON.stringify(allDiag, null, 2));
-    log(`📁 Diagnostics saved to device-diagnostics.json`);
+    debugLog("Diagnostics saved to device-diagnostics.json");
   } catch (err) {
     console.warn(`⚠️ Could not write diagnostics: ${err.message}`);
   }
 }
 
+/**
+ * Enqueue a message for retry when OpenClaw is offline.
+ * Sends a control message to the device to notify about queuing.
+ */
+function enqueueMessage(pairingId, content, cable) {
+  if (!messageQueues.has(pairingId)) {
+    messageQueues.set(pairingId, []);
+  }
+  const queue = messageQueues.get(pairingId);
+  if (queue.length >= MESSAGE_QUEUE_MAX) {
+    queue.shift();
+    log("WARN", `Message queue full (${MESSAGE_QUEUE_MAX}) for pairing ${pairingId}, dropped oldest message`);
+  }
+  queue.push({ content, queuedAt: new Date().toISOString() });
+  log("WARN", `Message queued for retry (pairing ${pairingId}, queue size: ${queue.length})`);
+
+  // Notify device that the message is queued
+  if (cable) {
+    sendControlMessage(cable, "status_update", {
+      event: "message_queued",
+      queue_size: queue.length,
+    });
+  }
+}
+
+/**
+ * Drain the message queue by retrying forwarding.
+ * Called after a successful forward to flush any backlog.
+ */
+async function drainMessageQueue(cable, pairingId) {
+  const queue = messageQueues.get(pairingId);
+  if (!queue || queue.length === 0) return;
+
+  log("INFO", `Draining message queue for pairing ${pairingId} (${queue.length} messages)...`);
+  const toRetry = [...queue];
+  queue.length = 0; // Clear queue before retrying
+
+  for (const item of toRetry) {
+    try {
+      const forwardConfig = { ...config, pairingId };
+      const response = await forward(forwardConfig, item.content);
+      if (response) {
+        cable.send({ content: response, content_type: "text" });
+        log("INFO", `Queued message forwarded successfully (pairing ${pairingId})`);
+      }
+    } catch (err) {
+      // Re-queue failed messages
+      queue.push(item);
+      log("WARN", `Queued message retry failed, re-queued (pairing ${pairingId}):`, err.message);
+    }
+  }
+
+  if (queue.length === 0) {
+    messageQueues.delete(pairingId);
+    log("INFO", `Message queue drained successfully (pairing ${pairingId})`);
+  } else {
+    log("WARN", `${queue.length} messages still in queue for pairing ${pairingId} after drain attempt`);
+  }
+}
+
 main().catch((err) => {
-  console.error("💥 Fatal:", err.message);
+  log("ERROR", "Fatal:", err.message);
   process.exit(1);
 });

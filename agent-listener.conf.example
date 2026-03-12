@@ -20,7 +20,7 @@ FORWARD_MODE=gateway
 GATEWAY_URL=ws://127.0.0.1:18789
 # GATEWAY_AUTH_TOKEN=  # Override auto-detected token if needed
 
-# OpenClaw agent name (used when FORWARD_MODE=openclaw-cli or gateway)
+# OpenClaw agent name (fallback when agent autodiscovery finds no agents)
 OPENCLAW_AGENT=main
 
 # Webhook URL (used when FORWARD_MODE=webhook)
