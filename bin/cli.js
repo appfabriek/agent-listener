@@ -42,6 +42,10 @@ const command = process.argv[2] || "help";
 const LABEL = "com.appfabriek.agent-listener";
 
 switch (command) {
+  case "init":
+    await init();
+    break;
+
   case "install":
     await install();
     break;
@@ -86,6 +90,49 @@ switch (command) {
     process.exit(1);
 }
 
+async function init() {
+  const targetEnv = resolve(process.cwd(), ".env");
+  if (existsSync(targetEnv)) {
+    console.log("✅ .env already exists in this directory.");
+    console.log(`   Edit ${targetEnv} to change settings.`);
+    return;
+  }
+
+  const examplePath = resolve(installPath, ".env.example");
+  if (existsSync(examplePath)) {
+    const content = readFileSync(examplePath, "utf-8");
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(targetEnv, content);
+    console.log(`✅ Created .env from template.`);
+  } else {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(targetEnv, [
+      "# Agent Talk To Me — Listener Configuration",
+      "# See: https://agenttalktome.com",
+      "",
+      "# API URL (default: https://agenttalktome.com)",
+      "# API_URL=https://agenttalktome.com",
+      "",
+      "# Display name in the iOS app",
+      "LISTENER_NAME=My Agent",
+      "",
+      "# How to forward messages to your agent:",
+      "#   gateway      — OpenClaw Gateway (default)",
+      "#   openclaw-cli — openclaw CLI",
+      "#   webhook      — HTTP POST to a URL",
+      "# FORWARD_MODE=gateway",
+      "",
+      "# Credentials (auto-filled on first start)",
+      "# REGISTRATION_TOKEN=",
+      "# LISTENER_IDENTIFIER=",
+      "",
+    ].join("\n"));
+    console.log(`✅ Created .env with defaults.`);
+  }
+  console.log(`   Edit .env to set LISTENER_NAME and FORWARD_MODE.`);
+  console.log(`   Then run: agent-listener start`);
+}
+
 async function install() {
   if (process.platform === "darwin") {
     const { installLaunchd } = await import("../lib/install.js");
@@ -114,34 +161,35 @@ async function uninstall() {
 }
 
 async function start() {
+  // Check if daemon is installed — if so, start via daemon manager
   if (process.platform === "darwin") {
-    try {
-      execSync(`launchctl bootout gui/${process.getuid()}/${LABEL} 2>/dev/null`, { stdio: "ignore" });
-    } catch { /* not loaded, fine */ }
     const plistPath = resolve(process.env.HOME, "Library/LaunchAgents", `${LABEL}.plist`);
-    if (!existsSync(plistPath)) {
-      console.error("Daemon not installed. Run 'agent-listener install' first.");
-      process.exit(1);
-    }
-    try {
-      execSync(`launchctl bootstrap gui/${process.getuid()} ${plistPath}`, { stdio: "inherit" });
-      console.log("Agent listener started.");
-    } catch {
-      console.error("Failed to start. Check 'agent-listener logs' for details.");
-      process.exit(1);
+    if (existsSync(plistPath)) {
+      try {
+        execSync(`launchctl bootout gui/${process.getuid()}/${LABEL} 2>/dev/null`, { stdio: "ignore" });
+      } catch { /* not loaded, fine */ }
+      try {
+        execSync(`launchctl bootstrap gui/${process.getuid()} ${plistPath}`, { stdio: "inherit" });
+        console.log("Agent listener started (daemon).");
+        return;
+      } catch {
+        console.error("Daemon start failed, falling back to foreground.");
+      }
     }
   } else if (process.platform === "linux") {
     try {
+      execSync("systemctl --user is-enabled agent-listener 2>/dev/null", { stdio: "ignore" });
       execSync("systemctl --user start agent-listener", { stdio: "inherit" });
-      console.log("Agent listener started.");
-    } catch {
-      console.error("Failed to start. Run 'agent-listener install' first if not installed.");
-      process.exit(1);
-    }
-  } else {
-    console.log("Starting listener in foreground...");
-    execSync(`node ${resolve(installPath, "index.js")}`, { stdio: "inherit", cwd: installPath });
+      console.log("Agent listener started (daemon).");
+      return;
+    } catch { /* not installed as service, fall through */ }
   }
+
+  // Foreground mode — works without daemon installation
+  console.log("Starting listener in foreground...");
+  // Use cwd for .env lookup, installPath for the script
+  const cwd = existsSync(resolve(process.cwd(), ".env")) ? process.cwd() : installPath;
+  execSync(`node ${resolve(installPath, "index.js")}`, { stdio: "inherit", cwd });
 }
 
 async function stop() {
@@ -283,21 +331,25 @@ function showHelp() {
 Usage: agent-listener <command>
 
 Commands:
+  init             Create a .env config file in the current directory
+  start            Start the listener (foreground, or daemon if installed)
+  stop             Stop the daemon
   install          Install as daemon (launchd on macOS, systemd on Linux)
   uninstall        Remove daemon
-  start            Start the listener
-  stop             Stop the listener
   status           Show status (running/stopped, uptime, last heartbeat)
   create-pairing   Create a new pairing code for the iOS app
   config           Show current configuration
   logs             Show recent logs
   help             Show this help
 
-Examples:
-  agent-listener install        # Install and start as daemon
-  agent-listener create-pairing # Get a code for the iOS app
-  agent-listener status         # Check if listener is running
-  agent-listener logs           # View recent log output`);
+Quick start:
+  agent-listener init            # Create .env config
+  agent-listener start           # Start in foreground
+  agent-listener create-pairing  # Get a code for the iOS app
+
+Production:
+  agent-listener install         # Install as daemon (auto-start on boot)
+  agent-listener start           # Start the daemon`);
 }
 
 function getVersion() {

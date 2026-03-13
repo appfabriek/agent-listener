@@ -16,24 +16,10 @@ if (existsSync(confPath)) {
   dotenv.config({ path: envPath });
 }
 
-/**
- * Validate that all required environment variables are set and non-empty.
- * Exits with code 1 if any are missing.
- */
-function validateEnv() {
-  const required = ["API_URL", "REGISTRATION_TOKEN", "LISTENER_IDENTIFIER"];
-  const missing = required.filter((key) => !process.env[key]?.trim());
-  if (missing.length > 0) {
-    console.error(`❌ Missing required environment variables: ${missing.join(", ")}`);
-    console.error("   Set these in agent-listener.conf (or .env) or environment before starting.");
-    process.exit(1);
-  }
-}
-
-validateEnv();
+// No mandatory env vars — API_URL has a default, and credentials are auto-generated on first run.
 
 const config = {
-  apiUrl: process.env.API_URL,
+  apiUrl: process.env.API_URL || "https://agenttalktome.com",
   registrationToken: process.env.REGISTRATION_TOKEN,
   identifier: process.env.LISTENER_IDENTIFIER || process.env.IDENTIFIER,
   listenerType: process.env.LISTENER_TYPE || "agent",
