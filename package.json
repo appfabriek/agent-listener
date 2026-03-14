@@ -1,6 +1,6 @@
 {
   "name": "agent-listener",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Connect your AI agent to mobile voice interaction via Agent Talk To Me",
   "homepage": "https://agenttalktome.com",
   "repository": {
