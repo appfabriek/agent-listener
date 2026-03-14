@@ -3,8 +3,9 @@ import dotenv from "dotenv";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { register, heartbeat, getPairings, updateAgents, registerRestart, createPairingCode } from "./lib/api.js";
 import { connectCable, connectListenerChannel } from "./lib/cable.js";
-import { forward } from "./lib/forward.js";
+import { forward, validateWebhookUrl } from "./lib/forward.js";
 import { GatewayConnection } from "./lib/gateway.js";
+import { startHealthServer } from "./lib/health.js";
 import { discoverAgents, selectAgent } from "./lib/agent-discovery.js";
 import { readConfig, writeConfig, CONFIG_PATH } from "./lib/config-store.js";
 
@@ -43,6 +44,7 @@ const config = {
   webhookToken: process.env.WEBHOOK_TOKEN,
   gatewayUrl: process.env.GATEWAY_URL || "ws://127.0.0.1:18789",
   gatewayAuthToken: process.env.GATEWAY_AUTH_TOKEN || undefined,
+  healthPort: process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT, 10) : null,
   debug: process.env.DEBUG === "true",
   gateway: null, // Set at startup if forward mode is gateway
 };
@@ -176,6 +178,12 @@ async function main() {
   log("INFO", "Agent Listener starting...");
   log("INFO", `API: ${config.apiUrl}`);
   log("INFO", `Forward mode: ${config.forwardMode}`);
+
+  // Validate webhook URL at startup
+  if (config.forwardMode === "webhook") {
+    validateWebhookUrl(config.webhookUrl);
+    log("INFO", `Webhook URL: ${config.webhookUrl}`);
+  }
 
   // Step 1: Register or reconnect
   let token = config.registrationToken;
@@ -368,6 +376,19 @@ async function main() {
       sendControlMessage(cable, "request_logs");
     }
   });
+
+  // Step 8: Start health check server (opt-in via HEALTH_PORT)
+  let healthServer = null;
+  if (config.healthPort) {
+    healthServer = startHealthServer(config.healthPort, () => ({
+      status: "ok",
+      uptime: Math.floor(process.uptime()),
+      connected: activeCables.size > 0,
+      active_pairings: activeCables.size,
+      listener_id: identifier,
+    }));
+    log("INFO", `Health check endpoint: http://localhost:${config.healthPort}/health`);
+  }
 
   log("INFO", "Listener running. Press Ctrl+C to stop.");
   log("INFO", "Send SIGUSR1 to request device diagnostics.");

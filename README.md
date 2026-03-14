@@ -102,6 +102,8 @@ user's message
 
 Your webhook should return the agent's response as plain text.
 
+The webhook URL is validated at startup (must be a valid HTTP/HTTPS URL). If the webhook fails, the listener retries up to 3 times with exponential backoff (1s, 2s, 4s). Client errors (4xx except 408) are not retried. Each request has a 10-second timeout.
+
 ## Production Deployment
 
 ### Recommended: CLI install
@@ -143,6 +145,21 @@ WantedBy=multi-user.target
 
 Or use `agent-listener install` which generates this automatically.
 
+## Health Check
+
+Set `HEALTH_PORT` to enable an HTTP health check endpoint (opt-in):
+
+```bash
+HEALTH_PORT=8080
+```
+
+```
+GET http://localhost:8080/health
+→ 200 { "status": "ok", "uptime": 1234, "connected": true, "active_pairings": 1, "listener_id": "lst_..." }
+```
+
+Useful for monitoring tools, Docker health checks, or load balancers.
+
 ## Configuration
 
 All settings are stored in the `.env` configuration file in the project root. Copy `.env.example` to `.env` and adjust the values for your setup.
@@ -158,6 +175,7 @@ All settings are stored in the `.env` configuration file in the project root. Co
 | `OPENCLAW_AGENT` | No | `main` | OpenClaw agent name |
 | `WEBHOOK_URL` | No | — | Webhook endpoint |
 | `WEBHOOK_TOKEN` | No | — | Webhook auth token |
+| `HEALTH_PORT` | No | — | HTTP health check port (opt-in, e.g. `8080`) |
 | `DEBUG` | No | `false` | Enable debug logging |
 
 ## Diagnostics

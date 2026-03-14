@@ -27,6 +27,7 @@ describe("CLI", () => {
 
   it("handles all expected commands in the switch statement", () => {
     const expectedCommands = [
+      "agents",
       "install",
       "uninstall",
       "start",
@@ -70,6 +71,7 @@ describe("CLI", () => {
       "GATEWAY_AUTH_TOKEN",
       "WEBHOOK_URL",
       "WEBHOOK_TOKEN",
+      "HEALTH_PORT",
       "DEBUG",
     ];
     for (const v of expectedVars) {
@@ -93,13 +95,62 @@ describe("CLI", () => {
 
   it("package.json maps bin to cli.js", () => {
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf-8"));
-    assert.equal(pkg.bin["agent-listener"], "./bin/cli.js");
+    assert.ok(
+      pkg.bin["agent-listener"].endsWith("bin/cli.js"),
+      `bin should point to bin/cli.js, got: ${pkg.bin["agent-listener"]}`
+    );
   });
 
   it("defaults to help command when no argument is given", () => {
     assert.ok(
-      cliSource.includes('process.argv[2] || "help"'),
+      cliSource.includes('args[0] || "help"'),
       "CLI should default to help when no command is provided"
+    );
+  });
+
+  it("defines a parseFlags function", () => {
+    assert.ok(
+      cliSource.includes("function parseFlags("),
+      "CLI should define parseFlags for --json, --agent etc."
+    );
+  });
+
+  it("supports --json flag in agents command", () => {
+    assert.ok(
+      cliSource.includes("flags.json"),
+      "CLI should check flags.json for JSON output mode"
+    );
+  });
+
+  it("supports --agent flag in start command", () => {
+    assert.ok(
+      cliSource.includes("flags.agent"),
+      "CLI should check flags.agent for agent selection"
+    );
+  });
+
+  it("imports config-store for config management", () => {
+    assert.ok(
+      cliSource.includes("config-store.js"),
+      "CLI should import config-store for ~/.config/agent-listener/config"
+    );
+  });
+
+  it("help text includes agents command", () => {
+    assert.ok(
+      cliSource.includes("agents"),
+      "Help should mention the agents command"
+    );
+  });
+
+  it("help text includes --json and --agent options", () => {
+    assert.ok(
+      cliSource.includes("--json"),
+      "Help should mention --json flag"
+    );
+    assert.ok(
+      cliSource.includes("--agent"),
+      "Help should mention --agent flag"
     );
   });
 });

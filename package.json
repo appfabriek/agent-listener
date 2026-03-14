@@ -1,6 +1,6 @@
 {
   "name": "agent-listener",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Connect your AI agent to mobile voice interaction via Agent Talk To Me",
   "homepage": "https://agenttalktome.com",
   "repository": {
@@ -10,7 +10,7 @@
   "type": "module",
   "main": "index.js",
   "bin": {
-    "agent-listener": "./bin/cli.js"
+    "agent-listener": "bin/cli.js"
   },
   "scripts": {
     "start": "node index.js",
@@ -31,6 +31,6 @@
     "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=18.0.0"
   }
 }

@@ -27,5 +27,8 @@ OPENCLAW_AGENT=main
 WEBHOOK_URL=http://localhost:18888/hooks/wake
 WEBHOOK_TOKEN=
 
+# Health check HTTP endpoint (opt-in, set port to enable)
+# HEALTH_PORT=8080
+
 # Debug mode
 DEBUG=false

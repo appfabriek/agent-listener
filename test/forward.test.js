@@ -1,6 +1,6 @@
 import { describe, it, mock, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { forward, forwardGateway } from "../lib/forward.js";
+import { forward, forwardGateway, validateWebhookUrl } from "../lib/forward.js";
 
 let mockFetch;
 
@@ -160,5 +160,104 @@ describe("forward", () => {
 
     // Verify AbortSignal is present (timeout)
     assert.ok(capturedOptions.signal, "fetch should have an AbortSignal");
+  });
+
+  it("retries webhook on server error (5xx)", async () => {
+    let callCount = 0;
+    mockFetch.mock.mockImplementation(() => {
+      callCount++;
+      if (callCount < 3) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          statusText: "Service Unavailable",
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        text: () => Promise.resolve("success after retry"),
+      });
+    });
+
+    const config = {
+      forwardMode: "webhook",
+      webhookUrl: "http://localhost:18888/hooks/wake",
+      debug: false,
+    };
+
+    const result = await forward(config, "test");
+    assert.equal(result, "success after retry");
+    assert.equal(callCount, 3, "should have retried twice before success");
+  });
+
+  it("does not retry webhook on 4xx client error", async () => {
+    let callCount = 0;
+    mockFetch.mock.mockImplementation(() => {
+      callCount++;
+      return Promise.resolve({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+      });
+    });
+
+    const config = {
+      forwardMode: "webhook",
+      webhookUrl: "http://localhost:18888/hooks/wake",
+      debug: false,
+    };
+
+    await assert.rejects(() => forward(config, "test"), {
+      message: /400/,
+    });
+    assert.equal(callCount, 1, "should not retry on 4xx");
+  });
+
+  it("retries webhook on network error", async () => {
+    let callCount = 0;
+    mockFetch.mock.mockImplementation(() => {
+      callCount++;
+      if (callCount < 2) {
+        return Promise.reject(new Error("fetch failed: ECONNREFUSED"));
+      }
+      return Promise.resolve({
+        ok: true,
+        text: () => Promise.resolve("recovered"),
+      });
+    });
+
+    const config = {
+      forwardMode: "webhook",
+      webhookUrl: "http://localhost:18888/hooks/wake",
+      debug: false,
+    };
+
+    const result = await forward(config, "test");
+    assert.equal(result, "recovered");
+    assert.equal(callCount, 2);
+  });
+});
+
+describe("validateWebhookUrl", () => {
+  it("accepts valid http URL", () => {
+    assert.doesNotThrow(() => validateWebhookUrl("http://localhost:18888/hooks/wake"));
+  });
+
+  it("accepts valid https URL", () => {
+    assert.doesNotThrow(() => validateWebhookUrl("https://example.com/webhook"));
+  });
+
+  it("rejects missing URL", () => {
+    assert.throws(() => validateWebhookUrl(null), { message: /WEBHOOK_URL is required/ });
+    assert.throws(() => validateWebhookUrl(undefined), { message: /WEBHOOK_URL is required/ });
+    assert.throws(() => validateWebhookUrl(""), { message: /WEBHOOK_URL is required/ });
+  });
+
+  it("rejects invalid URL", () => {
+    assert.throws(() => validateWebhookUrl("not-a-url"), { message: /not a valid URL/ });
+  });
+
+  it("rejects non-http protocol", () => {
+    assert.throws(() => validateWebhookUrl("ftp://example.com/file"), { message: /http or https/ });
   });
 });

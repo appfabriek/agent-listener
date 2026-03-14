@@ -7,6 +7,7 @@
  *   agent-listener <command>
  *
  * Commands:
+ *   agents           List available OpenClaw agents
  *   install          Install as daemon (launchd on macOS, systemd on Linux)
  *   uninstall        Remove daemon
  *   start            Start the listener
@@ -23,25 +24,38 @@ import { dirname, resolve } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import dotenv from "dotenv";
+import { readConfig, writeConfig, CONFIG_PATH } from "../lib/config-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const installPath = resolve(__dirname, "..");
 
-// Load config
+// Load config: prefer ~/.config/agent-listener/config, then agent-listener.conf, then .env
+const storedConfig = readConfig(installPath);
 const confPath = resolve(installPath, "agent-listener.conf");
 const envPath = resolve(installPath, ".env");
-if (existsSync(confPath)) {
+
+// Load dotenv files for backwards compatibility (populates process.env)
+if (existsSync(CONFIG_PATH)) {
+  dotenv.config({ path: CONFIG_PATH });
+} else if (existsSync(confPath)) {
   dotenv.config({ path: confPath });
 } else if (existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
 
-const command = process.argv[2] || "help";
+// Parse CLI flags
+const args = process.argv.slice(2);
+const command = args[0] || "help";
+const flags = parseFlags(args.slice(1));
 
 const LABEL = "com.appfabriek.agent-listener";
 
 switch (command) {
+  case "agents":
+    await agents();
+    break;
+
   case "init":
     await init();
     break;
@@ -88,6 +102,50 @@ switch (command) {
     console.error(`Unknown command: ${command}`);
     console.error('Run "agent-listener help" for available commands.');
     process.exit(1);
+}
+
+/**
+ * Parse CLI flags into an object.
+ * Supports --flag, --flag value, --flag=value
+ */
+function parseFlags(argv) {
+  const result = {};
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith("--")) {
+      const eqIdx = arg.indexOf("=");
+      if (eqIdx !== -1) {
+        result[arg.substring(2, eqIdx)] = arg.substring(eqIdx + 1);
+      } else if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+        result[arg.substring(2)] = argv[i + 1];
+        i++;
+      } else {
+        result[arg.substring(2)] = true;
+      }
+    }
+  }
+  return result;
+}
+
+async function agents() {
+  const { discoverAgents } = await import("../lib/agent-discovery.js");
+  const agentList = await discoverAgents();
+
+  if (flags.json) {
+    console.log(JSON.stringify({ agents: agentList }));
+  } else {
+    if (agentList.length === 0) {
+      console.log("No agents found. Is the OpenClaw gateway running?");
+    } else {
+      console.log(`Found ${agentList.length} agent(s):\n`);
+      for (const a of agentList) {
+        const emoji = a.emoji ? `${a.emoji} ` : "";
+        const defaultTag = a.isDefault ? " (default)" : "";
+        const model = a.model ? ` [${a.model}]` : "";
+        console.log(`  ${emoji}${a.name} (id: ${a.id})${defaultTag}${model}`);
+      }
+    }
+  }
 }
 
 async function init() {
@@ -161,35 +219,48 @@ async function uninstall() {
 }
 
 async function start() {
-  // Check if daemon is installed — if so, start via daemon manager
-  if (process.platform === "darwin") {
-    const plistPath = resolve(process.env.HOME, "Library/LaunchAgents", `${LABEL}.plist`);
-    if (existsSync(plistPath)) {
+  const jsonMode = flags.json === true;
+  const agentId = flags.agent;
+  const pairFlag = flags.pair === true;
+
+  // Check if daemon is installed — if so, start via daemon manager (only in non-json mode)
+  if (!jsonMode) {
+    if (process.platform === "darwin") {
+      const plistPath = resolve(process.env.HOME, "Library/LaunchAgents", `${LABEL}.plist`);
+      if (existsSync(plistPath)) {
+        try {
+          execSync(`launchctl bootout gui/${process.getuid()}/${LABEL} 2>/dev/null`, { stdio: "ignore" });
+        } catch { /* not loaded, fine */ }
+        try {
+          execSync(`launchctl bootstrap gui/${process.getuid()} ${plistPath}`, { stdio: "inherit" });
+          console.log("Agent listener started (daemon).");
+          return;
+        } catch {
+          console.error("Daemon start failed, falling back to foreground.");
+        }
+      }
+    } else if (process.platform === "linux") {
       try {
-        execSync(`launchctl bootout gui/${process.getuid()}/${LABEL} 2>/dev/null`, { stdio: "ignore" });
-      } catch { /* not loaded, fine */ }
-      try {
-        execSync(`launchctl bootstrap gui/${process.getuid()} ${plistPath}`, { stdio: "inherit" });
+        execSync("systemctl --user is-enabled agent-listener 2>/dev/null", { stdio: "ignore" });
+        execSync("systemctl --user start agent-listener", { stdio: "inherit" });
         console.log("Agent listener started (daemon).");
         return;
-      } catch {
-        console.error("Daemon start failed, falling back to foreground.");
-      }
+      } catch { /* not installed as service, fall through */ }
     }
-  } else if (process.platform === "linux") {
-    try {
-      execSync("systemctl --user is-enabled agent-listener 2>/dev/null", { stdio: "ignore" });
-      execSync("systemctl --user start agent-listener", { stdio: "inherit" });
-      console.log("Agent listener started (daemon).");
-      return;
-    } catch { /* not installed as service, fall through */ }
   }
 
   // Foreground mode — works without daemon installation
-  console.log("Starting listener in foreground...");
-  // Use cwd for .env lookup, installPath for the script
+  if (!jsonMode) console.log("Starting listener in foreground...");
+
+  // Build args to pass to index.js
+  // In JSON mode, always generate a pairing code (the AI agent needs it)
+  const indexArgs = [];
+  if (jsonMode) indexArgs.push("--json", "--pair");
+  if (agentId) indexArgs.push("--agent", agentId);
+  if (!jsonMode && pairFlag) indexArgs.push("--pair");
+
   const cwd = existsSync(resolve(process.cwd(), ".env")) ? process.cwd() : installPath;
-  execSync(`node ${resolve(installPath, "index.js")}`, { stdio: "inherit", cwd });
+  execSync(`node ${resolve(installPath, "index.js")} ${indexArgs.join(" ")}`, { stdio: "inherit", cwd });
 }
 
 async function stop() {
@@ -242,8 +313,7 @@ async function createPairing() {
   const { createPairingCode } = await import("../lib/api.js");
   try {
     const result = await createPairingCode(apiUrl, token, identifier);
-    const jsonFlag = process.argv[3] === "--json";
-    if (jsonFlag) {
+    if (flags.json) {
       console.log(JSON.stringify({ code: result.code, expires_at: result.expires_at }));
     } else {
       console.log(`Koppelcode: ${result.code} (geldig tot ${result.expires_at})`);
@@ -270,10 +340,22 @@ function showConfig() {
     "GATEWAY_AUTH_TOKEN",
     "WEBHOOK_URL",
     "WEBHOOK_TOKEN",
+    "HEALTH_PORT",
     "DEBUG",
   ];
 
-  const configSource = existsSync(confPath) ? confPath : existsSync(envPath) ? envPath : "(none)";
+  // Determine which config source is active
+  let configSource;
+  if (existsSync(CONFIG_PATH)) {
+    configSource = CONFIG_PATH;
+  } else if (existsSync(confPath)) {
+    configSource = confPath;
+  } else if (existsSync(envPath)) {
+    configSource = envPath;
+  } else {
+    configSource = "(none)";
+  }
+
   console.log(`Config file: ${configSource}`);
   console.log(`Install path: ${installPath}`);
   console.log("");
@@ -328,9 +410,10 @@ function showLogs() {
 function showHelp() {
   console.log(`Agent Listener CLI v${getVersion()}
 
-Usage: agent-listener <command>
+Usage: agent-listener <command> [options]
 
 Commands:
+  agents           List available OpenClaw agents
   init             Create a .env config file in the current directory
   start            Start the listener (foreground, or daemon if installed)
   stop             Stop the daemon
@@ -342,10 +425,15 @@ Commands:
   logs             Show recent logs
   help             Show this help
 
+Options:
+  --json           Machine-readable JSON output
+  --agent <id>     Select which OpenClaw agent to use (for start command)
+  --pair           Generate a new pairing code on start
+
 Quick start:
-  agent-listener init            # Create .env config
-  agent-listener start           # Start in foreground
-  agent-listener create-pairing  # Get a code for the iOS app
+  agent-listener agents              # List available agents
+  agent-listener start --agent bob   # Start with a specific agent
+  agent-listener start --agent bob --json  # Machine-readable output
 
 Production:
   agent-listener install         # Install as daemon (auto-start on boot)
