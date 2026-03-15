@@ -2,7 +2,7 @@
 import dotenv from "dotenv";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { register, heartbeat, getPairings, updateAgents, registerRestart, createPairingCode } from "./lib/api.js";
-import { connectCable, connectListenerChannel } from "./lib/cable.js";
+import { connectCable, connectListenerChannel, connectListenerChannelAsync } from "./lib/cable.js";
 import { forward, validateWebhookUrl } from "./lib/forward.js";
 import { GatewayConnection } from "./lib/gateway.js";
 import { startHealthServer } from "./lib/health.js";
@@ -314,11 +314,10 @@ async function main() {
     }
   }
 
-  // Step 4: Get active pairings and connect
-  await syncPairings(token, identifier);
-
-  // Step 5: Subscribe to ListenerChannel for instant new-pairing notifications
-  const listenerCable = connectListenerChannel(config.apiUrl, token, (event) => {
+  // Step 4: Subscribe to ListenerChannel FIRST (wait for confirmation)
+  // This ensures no new_pairing broadcasts are missed during syncPairings
+  let listenerCable;
+  const listenerHandler = (event) => {
     if (event.type === "new_pairing") {
       log("INFO", `New pairing via ListenerChannel: ${event.pairing_id} (device: ${event.device?.name || "unknown"})`);
       emitJSON({ status: "new_pairing", pairing_id: event.pairing_id, device: event.device });
@@ -328,7 +327,18 @@ async function main() {
     } else {
       debugLog(`ListenerChannel event: ${event.type}`);
     }
-  });
+  };
+
+  try {
+    listenerCable = await connectListenerChannelAsync(config.apiUrl, token, listenerHandler);
+    log("INFO", "ListenerChannel subscribed — ready for instant pairing notifications");
+  } catch (err) {
+    log("WARN", `ListenerChannel subscription failed (${err.message}), falling back to polling`);
+    listenerCable = connectListenerChannel(config.apiUrl, token, listenerHandler);
+  }
+
+  // Step 5: Get active pairings and connect (after ListenerChannel is ready)
+  await syncPairings(token, identifier);
 
   // Step 6: Heartbeat every 60s
   const heartbeatInterval = setInterval(async () => {
