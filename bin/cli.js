@@ -92,6 +92,10 @@ switch (command) {
     showLogs();
     break;
 
+  case "docs":
+    showDocs();
+    break;
+
   case "help":
   case "--help":
   case "-h":
@@ -407,6 +411,16 @@ function showLogs() {
   }
 }
 
+function showDocs() {
+  const docsPath = new URL("../AGENT_INSTRUCTIONS.md", import.meta.url);
+  try {
+    const content = readFileSync(docsPath, "utf-8");
+    console.log(content);
+  } catch {
+    console.error("Documentation file not found. See AGENT_INSTRUCTIONS.md in the npm package.");
+  }
+}
+
 function showHelp() {
   console.log(`Agent Listener CLI v${getVersion()}
 
@@ -423,6 +437,7 @@ Commands:
   create-pairing   Create a new pairing code for the iOS app
   config           Show current configuration
   logs             Show recent logs
+  docs             Show full documentation for AI agents
   help             Show this help
 
 Options:

@@ -9,94 +9,139 @@ The agent-listener bridges the Agent Talk To Me iOS app to your AI agent. When a
 ## Installation
 
 ```bash
-npm install -g @appfabriek/agent-listener
-agent-listener install
+npx agent-listener start --agent your-agent-name --json
 ```
 
-This installs the listener as a background daemon that starts automatically on login.
+This single command registers, connects, and generates a pairing code. No configuration files needed. Credentials are stored in `~/.config/agent-listener/`.
+
+For permanent installation as a background daemon:
+```bash
+npx agent-listener install
+```
 
 ## Creating a Pairing
 
 To allow a user to connect their iOS app to your agent:
 
 ```bash
-agent-listener create-pairing
+npx agent-listener start --agent your-agent-name --json --pair
 ```
 
-This returns a 6-digit code. The user enters this code in the Agent Talk To Me iOS app. The code is valid for 10 minutes.
-
-For machine-readable output:
-```bash
-agent-listener create-pairing --json
+Output:
+```json
+{"status":"running","agent":"bob","pairing_code":"847291","expires_at":"2026-03-13T12:05:00Z"}
 ```
+
+The user enters the 6-digit code in the Agent Talk To Me iOS app. The code is valid for 1 hour.
+
+## Control Messages
+
+You can communicate with the iOS app through control messages. These are JSON messages with `content_type: "control"` that are not shown in the chat UI.
+
+### Request device logs
+
+Send a `request_logs` control message to get diagnostics from the connected iOS device:
+
+```json
+{"action": "request_logs", "payload": {}}
+```
+
+The device responds with a `logs` message containing:
+- Device ID, pairing ID, listener ID
+- WebSocket connection state
+- App version and build number
+- Push notification status
+- Recent debug log lines (last 200 entries)
+- Full log history
+
+### Ping / Pong
+
+Verify the device is reachable:
+
+```json
+{"action": "ping", "payload": {"source": "agent"}}
+```
+
+The device responds with:
+```json
+{"action": "pong", "payload": {"status": "ok", "connected": "true", "message_count": "5"}}
+```
+
+### Request reconnect
+
+Ask the device to reconnect its WebSocket:
+
+```json
+{"action": "reconnect", "payload": {}}
+```
+
+### Request message sync
+
+Ask the device to sync missed messages:
+
+```json
+{"action": "sync", "payload": {}}
+```
+
+### How to send control messages
+
+Control messages are sent as regular messages with `content_type: "control"`. The listener forwards them through the same channel as text messages. To send one from your agent, reply with a JSON string as the message content and set the content type to control.
 
 ## Monitoring
 
 Check if the listener is running and healthy:
 
 ```bash
-agent-listener status
+npx agent-listener status
 ```
 
-This shows:
-- Whether the daemon is running
-- Process ID and uptime
-- Listener identifier
-- API connection details
-- Last activity timestamp
+This shows: whether the daemon is running, process ID, listener identifier, API connection, and last activity.
 
 ## Configuration
 
 View current configuration:
 
 ```bash
-agent-listener config
+npx agent-listener config
 ```
 
-Configuration is stored in `agent-listener.conf` (or `.env`) in the install directory. Key settings:
+Key settings:
 - `API_URL` — The ATTM API server
 - `FORWARD_MODE` — How messages reach you: `gateway` (WebSocket), `openclaw-cli`, or `webhook`
 - `OPENCLAW_AGENT` — Which agent to forward messages to
-
-## Starting and Stopping
-
-```bash
-agent-listener start    # Start the daemon
-agent-listener stop     # Stop the daemon
-```
+- `HEALTH_PORT` — Optional HTTP health check endpoint port
 
 ## Logs
 
 View recent log output:
 
 ```bash
-agent-listener logs
+npx agent-listener logs
 ```
 
-Logs include connection events, message forwarding, errors, and heartbeat status.
+Device diagnostics are saved to `device-diagnostics.json` in `~/.config/agent-listener/` whenever the iOS app sends a status report.
+
+## Important Notes for Responses
+
+- **No emojis**: The iOS app reads your responses aloud via text-to-speech. Emojis are spoken as descriptions (e.g. "smiling face"), which sounds unnatural. Use plain text only.
+- **Keep responses concise**: Long responses take a long time to speak. Aim for 1-3 sentences.
+- **Dutch language**: The app's speech recognition and TTS are configured for Dutch (nl-NL) by default.
 
 ## Troubleshooting
 
 ### Listener not running
 ```bash
-agent-listener status     # Check if installed and running
-agent-listener install    # Reinstall if needed
-agent-listener logs       # Check for errors
+npx agent-listener status
+npx agent-listener logs
 ```
 
 ### No messages arriving
-1. Verify the listener is running: `agent-listener status`
-2. Check that a pairing exists: `agent-listener create-pairing` if needed
-3. Check logs for connection errors: `agent-listener logs`
-4. Verify the API is reachable: `agent-listener config` shows the API URL
+1. Verify the listener is running: `npx agent-listener status`
+2. Check logs for connection errors: `npx agent-listener logs`
+3. Request device diagnostics via `request_logs` control message
+4. Check `device-diagnostics.json` for device state
 
-### Device diagnostics
-The file `device-diagnostics.json` in the install directory contains diagnostic data from connected iOS devices, including connection state, app version, and last communication timestamps.
-
-## Uninstalling
-
+### Uninstalling
 ```bash
-agent-listener uninstall
+npx agent-listener uninstall
 ```
-
-This removes the daemon configuration. The listener files remain on disk.
