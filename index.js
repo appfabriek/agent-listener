@@ -307,8 +307,8 @@ async function main() {
       config.gateway = gateway;
       log("INFO", `Gateway connected: ${config.gatewayUrl}`);
     } catch (err) {
-      log("WARN", `Gateway connection failed: ${err.message}`);
-      log("WARN", "Falling back to openclaw-cli forward mode");
+      log("INFO", `Gateway not available, using openclaw CLI instead`);
+      debugLog(`Gateway error: ${err.message}`);
       config.forwardMode = "openclaw-cli";
       config.gateway = null;
     }
