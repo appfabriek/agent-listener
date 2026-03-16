@@ -110,6 +110,9 @@ const messageQueues = new Map(); // pairing_id -> [{ content, queuedAt }]
 // Track device diagnostics per pairing (updated via status_report + logs)
 const deviceDiagnostics = new Map();
 
+// Track voice session instructions per pairing (set by voice_session_start control)
+const voiceSessionInstructions = new Map();
+
 /**
  * Persist credentials to ~/.config/agent-listener/config.
  * Falls back to .env in the install directory for backwards compatibility.
@@ -450,9 +453,17 @@ function connectPairing(apiUrl, token, pairing) {
     log("INFO", `Message from device (pairing ${pairing.id}): ${message.content.substring(0, 80)}`);
 
     try {
+      // Prepend voice session instruction if active (first message only)
+      let content = message.content;
+      const voiceInstruction = voiceSessionInstructions.get(pairing.id);
+      if (voiceInstruction) {
+        content = `[Systeem: ${voiceInstruction}]\n\n${content}`;
+        voiceSessionInstructions.delete(pairing.id); // Only prepend once per session
+      }
+
       // Pass pairingId for gateway mode's idempotency key + session key
       const forwardConfig = { ...config, pairingId: pairing.id };
-      const response = await forward(forwardConfig, message.content);
+      const response = await forward(forwardConfig, content);
       if (response) {
         debugLog(`Response: ${response.substring(0, 80)}`);
         const sent = cable.send({
@@ -531,6 +542,13 @@ function handleControlResponse(pairingId, message) {
           storeDiagnostics(pairingId, control.payload);
         }
         break;
+      case "voice_session_start": {
+        if (!jsonMode) console.log(`🎤 Pairing ${pairingId}: voice session started`);
+        // Store voice mode for this pairing — prepend instruction to next message
+        const instruction = control.payload?.instruction || "Korte antwoorden, geen URLs.";
+        voiceSessionInstructions.set(pairingId, instruction);
+        break;
+      }
       case "reconnect_ack":
         if (!jsonMode) console.log(`📱 Pairing ${pairingId}: device is reconnecting`);
         break;
