@@ -3,7 +3,8 @@ import dotenv from "dotenv";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { register, heartbeat, getPairings, updateAgents, registerRestart, createPairingCode } from "./lib/api.js";
 import { connectCable, connectListenerChannel, connectListenerChannelAsync } from "./lib/cable.js";
-import { forward, validateWebhookUrl } from "./lib/forward.js";
+import { forward, validateWebhookUrl, forwardClaudeCLIWithSession } from "./lib/forward.js";
+import { gatherSessions } from "./lib/sessions.js";
 import { GatewayConnection } from "./lib/gateway.js";
 import { startHealthServer } from "./lib/health.js";
 import { discoverAgents, selectAgent } from "./lib/agent-discovery.js";
@@ -102,6 +103,10 @@ function parseCLIFlags(argv) {
 
 // Track active cable connections by pairing ID
 const activeCables = new Map();
+
+// Per-pairing active session: tracks which agent/session the device is talking to
+// Map<pairingId, { agentType: "openclaw"|"claude"|"codex", sessionId: string|null, cwd: string|null }>
+const activeSessions = new Map();
 
 // In-memory message queue for when OpenClaw is offline (max 50 per pairing)
 const MESSAGE_QUEUE_MAX = 50;
@@ -461,13 +466,32 @@ function connectPairing(apiUrl, token, pairing) {
         voiceSessionInstructions.delete(pairing.id); // Only prepend once per session
       }
 
-      // Pass pairingId for gateway mode's idempotency key + session key
-      const forwardConfig = { ...config, pairingId: pairing.id };
-      const response = await forward(forwardConfig, content);
-      if (response) {
-        debugLog(`Response: ${response.substring(0, 80)}`);
+      // Build forward config based on active session for this pairing
+      const forwardConfig = buildForwardConfig(pairing.id);
+      let responseText;
+
+      // For Claude CLI: use extended version to track session ID
+      if (forwardConfig.forwardMode === "claude-cli") {
+        const result = await forwardClaudeCLIWithSession(
+          content,
+          forwardConfig.claudeSessionId,
+          forwardConfig.claudeCwd,
+          forwardConfig.debug,
+        );
+        responseText = result.text;
+        // Store session ID for future messages in this conversation
+        if (result.sessionId) {
+          const session = activeSessions.get(pairing.id);
+          if (session) session.sessionId = result.sessionId;
+        }
+      } else {
+        responseText = await forward(forwardConfig, content);
+      }
+
+      if (responseText) {
+        debugLog(`Response: ${responseText.substring(0, 80)}`);
         const sent = cable.send({
-          content: response,
+          content: responseText,
           content_type: "text",
         });
         if (sent) {
@@ -512,6 +536,12 @@ function handleControlResponse(pairingId, message) {
   try {
     const control = JSON.parse(message.content);
     debugLog(`Control response from pairing ${pairingId}: ${control.action}`);
+
+    // Check for session-related control messages first
+    if (["request_sessions", "select_session", "new_session"].includes(control.action)) {
+      handleSessionControl(pairingId, control.action, control.payload);
+      return;
+    }
 
     switch (control.action) {
       case "ping": {
@@ -651,6 +681,105 @@ async function drainMessageQueue(cable, pairingId) {
   } else {
     log("WARN", `${queue.length} messages still in queue for pairing ${pairingId} after drain attempt`);
   }
+}
+
+/**
+ * Build a forward config for a pairing based on its active session.
+ * Falls back to the global config (OpenClaw) if no session is selected.
+ */
+function buildForwardConfig(pairingId) {
+  const session = activeSessions.get(pairingId);
+
+  if (!session || session.agentType === "openclaw") {
+    // Default: use global config (gateway/openclaw-cli)
+    return { ...config, pairingId };
+  }
+
+  if (session.agentType === "claude") {
+    return {
+      ...config,
+      forwardMode: "claude-cli",
+      claudeSessionId: session.sessionId || null,
+      claudeCwd: session.cwd || null,
+      pairingId,
+    };
+  }
+
+  if (session.agentType === "codex") {
+    return {
+      ...config,
+      forwardMode: "codex-cli",
+      codexSessionId: session.sessionId || null,
+      codexCwd: session.cwd || null,
+      pairingId,
+    };
+  }
+
+  return { ...config, pairingId };
+}
+
+/**
+ * Handle session-related control messages from the iOS app.
+ */
+async function handleSessionControl(pairingId, action, payload) {
+  const cable = activeCables.get(pairingId);
+  if (!cable) return;
+
+  switch (action) {
+    case "request_sessions": {
+      log("INFO", `Pairing ${pairingId}: requesting session list`);
+      try {
+        const sessions = await gatherSessions({
+          gateway: config.gateway,
+          openclawAgent: config.openclawAgent,
+          debug: config.debug,
+        });
+        sendControlMessage(cable, "sessions", { sessions });
+        log("INFO", `Pairing ${pairingId}: sent ${sessions.length} sessions`);
+      } catch (err) {
+        log("ERROR", `Failed to gather sessions: ${err.message}`);
+        sendControlMessage(cable, "sessions", { sessions: [], error: err.message });
+      }
+      break;
+    }
+
+    case "select_session": {
+      const { session_id, agent_type, cwd } = payload || {};
+      log("INFO", `Pairing ${pairingId}: selected session ${session_id} (${agent_type})`);
+      activeSessions.set(pairingId, {
+        agentType: agent_type || "openclaw",
+        sessionId: session_id || null,
+        cwd: cwd || null,
+      });
+      sendControlMessage(cable, "session_selected", {
+        session_id,
+        agent_type,
+        status: "ok",
+      });
+      break;
+    }
+
+    case "new_session": {
+      const agentType = payload?.agent_type || "openclaw";
+      const cwd = payload?.cwd || null;
+      log("INFO", `Pairing ${pairingId}: starting new ${agentType} session`);
+      activeSessions.set(pairingId, {
+        agentType,
+        sessionId: null, // Will be assigned on first message
+        cwd,
+      });
+      sendControlMessage(cable, "session_selected", {
+        session_id: null,
+        agent_type: agentType,
+        status: "ok",
+      });
+      break;
+    }
+
+    default:
+      return false; // Not a session control message
+  }
+  return true;
 }
 
 main().catch((err) => {
