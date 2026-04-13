@@ -338,6 +338,8 @@ async function start() {
     const expiresDate = new Date(pairing.expires_at);
     const timeStr = expiresDate.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
     console.log(`  Geldig tot ${timeStr}.`);
+    console.log(``);
+    console.log(`  Nieuwe code nodig? agent-listener create-pairing`);
   } catch (err) {
     console.error(`⚠ Kon geen koppelcode aanmaken: ${err.message}`);
     console.log(`  Gebruik 'agent-listener create-pairing' om later een code aan te maken.`);
