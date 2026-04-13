@@ -132,22 +132,36 @@ function parseFlags(argv) {
 }
 
 async function agents() {
-  const { discoverAgents } = await import("../lib/agent-discovery.js");
-  const agentList = await discoverAgents();
+  const { discoverBackends } = await import("../lib/agent-discovery.js");
+  const { backends, openclawAgents } = await discoverBackends();
 
   if (flags.json) {
-    console.log(JSON.stringify({ agents: agentList }));
-  } else {
-    if (agentList.length === 0) {
-      console.log("No agents found. Is the OpenClaw gateway running?");
-    } else {
-      console.log(`Found ${agentList.length} agent(s):\n`);
-      for (const a of agentList) {
-        const emoji = a.emoji ? `${a.emoji} ` : "";
+    console.log(JSON.stringify({ backends, openclawAgents }));
+    return;
+  }
+
+  if (backends.length === 0) {
+    console.error(`Geen AI agent gevonden.`);
+    console.error(``);
+    console.error(`Installeer minstens één van:`);
+    console.error(`  - claude (Anthropic): npm i -g @anthropic-ai/claude-code`);
+    console.error(`  - codex (OpenAI):     npm i -g @openai/codex`);
+    console.error(`  - openclaw:           zie openclaw.ai`);
+    process.exit(1);
+  }
+
+  console.log(`Beschikbare AI backends:\n`);
+  for (const b of backends) {
+    if (b === "openclaw" && openclawAgents.length > 0) {
+      console.log(`  ✓ openclaw (${openclawAgents.length} agents)`);
+      for (const a of openclawAgents) {
+        const emoji = a.emoji ? `${a.emoji} ` : "  ";
         const defaultTag = a.isDefault ? " (default)" : "";
         const model = a.model ? ` [${a.model}]` : "";
-        console.log(`  ${emoji}${a.name} (id: ${a.id})${defaultTag}${model}`);
+        console.log(`    ${emoji}${a.name} (id: ${a.id})${defaultTag}${model}`);
       }
+    } else {
+      console.log(`  ✓ ${b}`);
     }
   }
 }
@@ -227,44 +241,107 @@ async function start() {
   const agentId = flags.agent;
   const pairFlag = flags.pair === true;
 
-  // Check if daemon is installed — if so, start via daemon manager (only in non-json mode)
-  if (!jsonMode) {
-    if (process.platform === "darwin") {
-      const plistPath = resolve(process.env.HOME, "Library/LaunchAgents", `${LABEL}.plist`);
-      if (existsSync(plistPath)) {
-        try {
-          execSync(`launchctl bootout gui/${process.getuid()}/${LABEL} 2>/dev/null`, { stdio: "ignore" });
-        } catch { /* not loaded, fine */ }
-        try {
-          execSync(`launchctl bootstrap gui/${process.getuid()} ${plistPath}`, { stdio: "inherit" });
-          console.log("Agent listener started (daemon).");
-          return;
-        } catch {
-          console.error("Daemon start failed, falling back to foreground.");
-        }
-      }
-    } else if (process.platform === "linux") {
-      try {
-        execSync("systemctl --user is-enabled agent-listener 2>/dev/null", { stdio: "ignore" });
-        execSync("systemctl --user start agent-listener", { stdio: "inherit" });
-        console.log("Agent listener started (daemon).");
-        return;
-      } catch { /* not installed as service, fall through */ }
+  // ── Step 1: Detect available AI backends ──────────────────────────
+  const { discoverBackends } = await import("../lib/agent-discovery.js");
+  const { backends, openclawAgents } = await discoverBackends();
+
+  if (backends.length === 0) {
+    console.error(`✗ Geen AI agent gevonden.`);
+    console.error(``);
+    console.error(`  Installeer minstens één van:`);
+    console.error(`  - claude (Anthropic): npm i -g @anthropic-ai/claude-code`);
+    console.error(`  - codex (OpenAI):     npm i -g @openai/codex`);
+    console.error(`  - openclaw:           zie openclaw.ai`);
+    console.error(``);
+    console.error(`  Draai dit commando op de machine waar je agent draait.`);
+    process.exit(1);
+  }
+
+  const agentSummary = backends.map((b) => {
+    if (b === "openclaw" && openclawAgents.length > 0)
+      return `openclaw (${openclawAgents.length} agents)`;
+    return b;
+  });
+  console.log(`✓ Gevonden: ${agentSummary.join(", ")}`);
+
+  // ── Step 2: Register with API (or reuse existing credentials) ─────
+  const { readConfig: readCfg, writeConfig: writeCfg } = await import("../lib/config-store.js");
+  const existing = readCfg(installPath);
+  const apiUrl = process.env.API_URL || existing.API_URL || "https://agenttalktome.com";
+
+  let identifier = existing.LISTENER_IDENTIFIER;
+  let regToken = existing.REGISTRATION_TOKEN;
+
+  if (identifier && regToken) {
+    // Try heartbeat to verify credentials still work
+    try {
+      const { heartbeat } = await import("../lib/api.js");
+      await heartbeat(apiUrl, regToken, identifier);
+      console.log(`✓ Listener actief: ${identifier}`);
+    } catch {
+      // Credentials stale, re-register
+      identifier = null;
+      regToken = null;
     }
   }
 
-  // Foreground mode — works without daemon installation
-  if (!jsonMode) console.log("Starting listener in foreground...");
+  if (!identifier || !regToken) {
+    const { register } = await import("../lib/api.js");
+    const hostname = (await import("node:os")).hostname();
+    const result = await register(apiUrl, { type: "agent", name: hostname });
+    identifier = result.identifier;
+    regToken = result.registration_token;
+    console.log(`✓ Listener geregistreerd: ${identifier}`);
+  }
 
-  // Build args to pass to index.js
-  // In JSON mode, always generate a pairing code (the AI agent needs it)
-  const indexArgs = [];
-  if (jsonMode) indexArgs.push("--json", "--pair");
-  if (agentId) indexArgs.push("--agent", agentId);
-  if (!jsonMode && pairFlag) indexArgs.push("--pair");
+  // Determine default openclaw agent
+  const openclawAgent = agentId
+    || existing.OPENCLAW_AGENT
+    || (openclawAgents.find((a) => a.isDefault)?.id)
+    || (openclawAgents[0]?.id)
+    || "main";
 
-  const cwd = existsSync(resolve(process.cwd(), ".env")) ? process.cwd() : installPath;
-  execSync(`node ${resolve(installPath, "index.js")} ${indexArgs.join(" ")}`, { stdio: "inherit", cwd });
+  // Save config
+  writeCfg({
+    API_URL: apiUrl,
+    REGISTRATION_TOKEN: regToken,
+    LISTENER_IDENTIFIER: identifier,
+    OPENCLAW_AGENT: openclawAgent,
+  });
+
+  // ── Step 3: Install and start daemon ──────────────────────────────
+  if (process.platform === "darwin") {
+    const { installLaunchd } = await import("../lib/install.js");
+    installLaunchd(installPath);
+  } else if (process.platform === "linux") {
+    const { installSystemd } = await import("../lib/install.js");
+    installSystemd(installPath);
+  } else {
+    console.log("⚠ Geen daemon-support op dit platform. Start in voorgrond...");
+    const indexArgs = ["--pair"];
+    if (agentId) indexArgs.push("--agent", agentId);
+    execSync(`node ${resolve(installPath, "index.js")} ${indexArgs.join(" ")}`, { stdio: "inherit" });
+    return;
+  }
+
+  // ── Step 4: Wait for daemon to come up, then generate pairing code ─
+  // Give the daemon a moment to start and register
+  await new Promise((r) => setTimeout(r, 3000));
+
+  try {
+    const { createPairingCode } = await import("../lib/api.js");
+    const pairing = await createPairingCode(apiUrl, regToken, identifier);
+    console.log(``);
+    console.log(`  Koppelcode: ${pairing.code}`);
+    console.log(``);
+    console.log(`  Voer deze code in de Agent Talk To Me app in.`);
+    const expiresDate = new Date(pairing.expires_at);
+    const timeStr = expiresDate.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+    console.log(`  Geldig tot ${timeStr}.`);
+  } catch (err) {
+    console.error(`⚠ Kon geen koppelcode aanmaken: ${err.message}`);
+    console.log(`  Gebruik 'agent-listener create-pairing' om later een code aan te maken.`);
+  }
 }
 
 async function stop() {
@@ -427,32 +504,22 @@ function showHelp() {
 Usage: agent-listener <command> [options]
 
 Commands:
-  agents           List available OpenClaw agents
-  init             Create a .env config file in the current directory
-  start            Start the listener (foreground, or daemon if installed)
+  start            Detect agents, install daemon, start, generate pairing code
   stop             Stop the daemon
-  install          Install as daemon (launchd on macOS, systemd on Linux)
   uninstall        Remove daemon
   status           Show status (running/stopped, uptime, last heartbeat)
   create-pairing   Create a new pairing code for the iOS app
+  agents           List available AI agents (claude, codex, openclaw)
   config           Show current configuration
   logs             Show recent logs
-  docs             Show full documentation for AI agents
   help             Show this help
 
 Options:
-  --json           Machine-readable JSON output
-  --agent <id>     Select which OpenClaw agent to use (for start command)
-  --pair           Generate a new pairing code on start
+  --agent <id>     Set default OpenClaw agent (optional)
+  --json           Machine-readable JSON output (for automation)
 
 Quick start:
-  agent-listener agents              # List available agents
-  agent-listener start --agent bob   # Start with a specific agent
-  agent-listener start --agent bob --json  # Machine-readable output
-
-Production:
-  agent-listener install         # Install as daemon (auto-start on boot)
-  agent-listener start           # Start the daemon`);
+  npx agent-listener start       # Detect agents, install, pair — done`);
 }
 
 function getVersion() {
