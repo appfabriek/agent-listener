@@ -691,8 +691,9 @@ function buildForwardConfig(pairingId) {
   const session = activeSessions.get(pairingId);
 
   if (!session || session.agentType === "openclaw") {
-    // Default: use global config (gateway/openclaw-cli)
-    return { ...config, pairingId };
+    // Use session-specific agent ID if available, otherwise global default
+    const agentId = session?.sessionId || config.openclawAgent;
+    return { ...config, openclawAgent: agentId, pairingId };
   }
 
   if (session.agentType === "claude") {
