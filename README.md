@@ -1,3 +1,5 @@
+> **Gearchiveerd (2026-10-11).** Opgevolgd door [agentlink](https://github.com/appfabriek/agentlink): koppel je agent vanuit de app met één commando.
+
 # Agent Talk To Me — Listener
 
 Connect any AI agent to mobile voice interaction. This Node.js service bridges the Agent Talk To Me iOS app to your AI agent via WebSocket.
